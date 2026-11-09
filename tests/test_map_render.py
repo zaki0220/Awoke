@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 import shapefile
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from awoke import map_render
 from awoke.map_render import MAP_SIZE, SCALE_RGB, MapRenderer
@@ -99,6 +99,7 @@ def test_unselected_land_in_visible_margins_is_rendered(
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_intensity_markers", lambda *args: None)
     monkeypatch.setattr(renderer, "_draw_scale_legend", lambda *args: None)
     monkeypatch.setattr(renderer, "_draw_region_list", lambda *args: None)
     event = (
@@ -116,7 +117,7 @@ def test_unselected_land_in_visible_margins_is_rendered(
     with Image.open(io.BytesIO(png)) as image:
         assert image.getpixel((665 + round(x), round(y))) == map_render.LAND_COLOR
         selected_x, selected_y = projection(0.5, 0.5)
-        expected = (255, 153, 0) if code == 552 else (map_render.EEW_WARNING_COLOR if code == 556 else SCALE_RGB[30])
+        expected = map_render.LAND_COLOR if code == 552 else (map_render.EEW_WARNING_COLOR if code == 556 else SCALE_RGB[30])
         assert image.getpixel((665 + round(selected_x), round(selected_y))) == expected
 
 
@@ -174,6 +175,43 @@ def test_forecast_and_tsunami_labels_distinguish_information_types(tmp_path: Pat
     assert forecast["221"][1] == "予想震度6弱"
     assert forecast["221"][0] == map_render.EEW_WARNING_COLOR
     assert tsunami["221"][1] == "津波警報"
+    assert tsunami["221"][0] == (255, 0, 0)
+
+
+@pytest.mark.parametrize("grade,label,color", [
+    ("Watch", "津波注意報", (255, 255, 0)),
+    ("Warning", "津波警報", (255, 0, 0)),
+    ("MajorWarning", "大津波警報", (150, 0, 150)),
+])
+def test_tsunami_grades_map_to_warning_colors(
+    tmp_path: Path, grade: str, label: str, color: tuple[int, int, int],
+) -> None:
+    regions = _renderer(tmp_path)._regions(552, {"areas": [{"name": "区域", "grade": grade}]}, {"区域": "1"})
+    assert regions == {"1": (color, label)}
+    assert MapRenderer._region_groups([(None, "区域", color, label)], 552) == [(label, color, ["区域"])]
+
+
+def test_tsunami_unknown_grade_is_skipped_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="awoke.map_render"):
+        regions = _renderer(tmp_path)._regions(552, {"areas": [
+            {"name": "区域", "grade": "unexpected"},
+            {"name": "未対応", "grade": "Watch"},
+        ]}, {"区域": "1"})
+    assert regions == {}
+    assert "unknown grade" in caplog.text
+    assert "unmapped tsunami area" in caplog.text
+
+
+@pytest.mark.parametrize("grades", [
+    ["MajorWarning", "Watch", "Warning"],
+    ["Watch", "Warning", "MajorWarning"],
+])
+def test_duplicate_tsunami_areas_keep_highest_grade(tmp_path: Path, grades: list[str]) -> None:
+    areas = [{"name": "区域", "grade": grade} for grade in grades]
+    regions = _renderer(tmp_path)._regions(552, {"areas": areas}, {"区域": "1"})
+    assert regions == {"1": ((150, 0, 150), "大津波警報")}
 
 
 @pytest.mark.parametrize("scale", [10, 40, 70, -1, None])
@@ -232,6 +270,7 @@ def test_unmapped_observation_is_skipped_when_other_points_are_mapped(
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_intensity_markers", lambda *args: None)
     monkeypatch.setattr(renderer, "_draw_scale_legend", lambda *args: None)
     monkeypatch.setattr(renderer, "_draw_region_list", lambda *args: None)
     event = {"points": [
@@ -379,6 +418,7 @@ def test_large_region_lists_do_not_change_map_image_dimensions(
     ])
     monkeypatch.setattr(renderer, "_iter_land_shapes", lambda path, bounds: iter([]))
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_intensity_markers", lambda *args: None)
     drawn: list[str] = []
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda self, xy, text, **kwargs: drawn.append(text))
 
@@ -395,7 +435,7 @@ def test_large_region_lists_do_not_change_map_image_dimensions(
         with Image.open(io.BytesIO(png)) as image:
             assert image.size == (665 + size[0], size[1] + 80)
             expected = SCALE_RGB[30] if code == 551 else (
-                (255, 153, 0) if code == 552 else map_render.EEW_WARNING_COLOR
+                map_render.SEA_COLOR if code == 552 else map_render.EEW_WARNING_COLOR
             )
             assert image.getpixel((665 + 200, 150)) == expected
 
@@ -416,6 +456,101 @@ def test_region_label_anchor_is_inside_concave_polygon() -> None:
     x, y = map_render._interior_point(shape)
     assert 0 < x < 4 and 0 < y < 4
     assert x < 1 or y < 1
+
+
+@pytest.mark.parametrize("scale,text", [
+    (10, "1"), (20, "2"), (30, "3"), (40, "4"), (45, "5-"),
+    (50, "5+"), (55, "6-"), (60, "6+"), (70, "7"),
+])
+@pytest.mark.parametrize("code", [551, 556])
+def test_intensity_markers_are_centered_and_use_intensity_colors(
+    monkeypatch: pytest.MonkeyPatch, code: int, scale: int, text: str,
+) -> None:
+    image = Image.new("RGB", (300, 300), map_render.SEA_COLOR)
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+    monkeypatch.setattr(map_render, "MAP_SIZE", image.size)
+    monkeypatch.setattr(map_render, "_font", lambda size: font)
+    monkeypatch.setattr(map_render, "_interior_point", lambda shape: (0.5, 0.5))
+    shape = SimpleNamespace(parts=[0], points=[
+        (0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75), (0.25, 0.25),
+    ])
+    label = map_render.SCALE_LABELS_TEXT[scale]
+    if code == 556:
+        label = f"予想{label}"
+    calls: list[tuple[Any, str, dict[str, Any]]] = []
+    original_text = draw.text
+
+    def record_text(xy: Any, value: str, **kwargs: Any) -> None:
+        calls.append((xy, value, kwargs))
+        original_text(xy, value, **kwargs)
+
+    monkeypatch.setattr(draw, "text", record_text)
+    projection = map_render._Projection((0, 0, 1, 1), image.size)
+    MapRenderer._draw_intensity_markers(draw, [(shape, "地域名", (255, 0, 0), label)], projection, code)
+    assert len(calls) == 1
+    position, actual, options = calls[0]
+    assert actual == text
+    assert image.getpixel((135, 130)) == SCALE_RGB[scale]
+    assert image.getpixel((127, 122)) == map_render.SEA_COLOR
+    assert image.getpixel((128, 145)) == (15, 20, 25)
+    assert image.getpixel((131, 145)) == map_render.BOUNDARY_COLOR
+    left, top, right, bottom = draw.textbbox(position, text, font=font)
+    assert (left + right) / 2 == pytest.approx(150, abs=1)
+    assert (top + bottom) / 2 == pytest.approx(145, abs=1)
+    assert 133 < left < right < 167 and 128 < top < bottom < 162
+    assert options["fill"] in ((15, 20, 25), (255, 255, 255))
+
+
+def test_unknown_eew_intensity_has_no_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    image = Image.new("RGB", (200, 200), map_render.EEW_WARNING_COLOR)
+    monkeypatch.setattr(map_render, "_font", lambda size: ImageFont.load_default())
+    shape = SimpleNamespace(parts=[0], points=[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    MapRenderer._draw_intensity_markers(
+        ImageDraw.Draw(image), [(shape, "地域名", map_render.EEW_WARNING_COLOR, "予想震度不明")],
+        map_render._Projection((0, 0, 1, 1), image.size), 556,
+    )
+    assert image.getextrema() == ((255, 255), (0, 0), (0, 0))
+
+
+def test_overlapping_markers_prioritize_highest_intensity(monkeypatch: pytest.MonkeyPatch) -> None:
+    image = Image.new("RGB", (300, 300), map_render.SEA_COLOR)
+    monkeypatch.setattr(map_render, "MAP_SIZE", image.size)
+    monkeypatch.setattr(map_render, "_font", lambda size: ImageFont.load_default())
+    monkeypatch.setattr(map_render, "_interior_point", lambda shape: (0.5, 0.5))
+    shape = SimpleNamespace(parts=[0], points=[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    selected = [(shape, "低", SCALE_RGB[10], "震度1"), (shape, "高", SCALE_RGB[70], "震度7")]
+    MapRenderer._draw_intensity_markers(
+        ImageDraw.Draw(image), selected, map_render._Projection((0, 0, 1, 1), image.size), 551,
+    )
+    assert image.getpixel((135, 130)) == SCALE_RGB[70]
+
+
+def test_marker_font_shrinks_until_text_fits(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Draw:
+        def textbbox(self, xy: Any, text: str, *, font: Any) -> tuple[int, int, int, int]:
+            return (0, 0, font.size * 2, font.size)
+
+    monkeypatch.setattr(map_render, "_font", lambda size: SimpleNamespace(size=size))
+    font, box = map_render._marker_font(Draw(), "5+")
+    assert font.size == 17
+    assert box == (0, 0, 34, 17)
+
+
+def test_tsunami_map_label_omits_region_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    image = Image.new("RGB", (200, 200), map_render.SEA_COLOR)
+    draw = ImageDraw.Draw(image)
+    monkeypatch.setattr(map_render, "MAP_SIZE", image.size)
+    monkeypatch.setattr(map_render, "_font", lambda size: ImageFont.load_default())
+    shape = SimpleNamespace(parts=[0], points=[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    calls: list[str] = []
+    monkeypatch.setattr(draw, "textbbox", lambda *args, **kwargs: (80, 80, 120, 90))
+    monkeypatch.setattr(draw, "text", lambda xy, text, **kwargs: calls.append(text))
+    MapRenderer._draw_region_labels(
+        draw, [(shape, "地域名", (255, 153, 0), "津波警報")],
+        map_render._Projection((0, 0, 1, 1), image.size),
+    )
+    assert calls == ["津波警報"]
 
 
 def test_hypocenter_marker_is_a_cross_not_a_circle() -> None:
@@ -451,6 +586,7 @@ def test_render_uses_dark_sea_gray_land_and_light_boundaries(
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_intensity_markers", lambda *args: None)
     def unexpected_legend(*args: Any) -> None:
         pytest.fail("EEW map must not show the intensity color legend")
 
@@ -488,6 +624,7 @@ def test_background_uses_jma_seismic_not_natural_earth(
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_intensity_markers", lambda *args: None)
     monkeypatch.setattr(renderer, "_draw_scale_legend", lambda *args: None)
     monkeypatch.setattr(renderer, "_draw_region_list", lambda *args: None)
     monkeypatch.setattr(renderer, "_read_boundary_index", lambda path: ({"区域": "1"}, {"1": (0, "区域")}))
@@ -512,10 +649,94 @@ def test_background_uses_jma_seismic_not_natural_earth(
 
 def test_unselected_region_boundary_does_not_fill_land() -> None:
     image = Image.new("RGB", (200, 200), map_render.LAND_COLOR)
-    shape = SimpleNamespace(parts=[0], points=[(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)])
+    shape = SimpleNamespace(parts=[0], points=[
+        (0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75), (0.25, 0.25),
+    ])
     map_render._draw_boundary(ImageDraw.Draw(image), shape, map_render._Projection((0, 0, 1, 1), image.size))
     assert image.getpixel((72, 95)) == map_render.BOUNDARY_COLOR
     assert image.getpixel((100, 95)) == map_render.LAND_COLOR
+
+
+@pytest.mark.parametrize("grade,color", [
+    ("Watch", (255, 255, 0)),
+    ("Warning", (255, 0, 0)),
+    ("MajorWarning", (150, 0, 150)),
+])
+def test_tsunami_open_multipart_lines_do_not_fill_or_connect_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, grade: str, color: tuple[int, int, int],
+) -> None:
+    renderer = _renderer(tmp_path)
+    map_size = (400, 400)
+    shape = SimpleNamespace(
+        bbox=(0.25, 0.25, 0.75, 0.75), parts=[0, 3],
+        points=[(0.25, 0.25), (0.25, 0.75), (0.75, 0.75), (0.6, 0.4), (0.7, 0.4)],
+    )
+    land = SimpleNamespace(parts=[0], points=[
+        (0.05, 0.05), (0.95, 0.05), (0.95, 0.95), (0.05, 0.95), (0.05, 0.05),
+    ])
+    monkeypatch.setattr(map_render, "MAP_SIZE", map_size)
+    monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
+    monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_region_list", lambda *args: None)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
+    monkeypatch.setattr(renderer, "_read_boundary_index", lambda path: ({"区域": "1"}, {"1": (0, "区域")}))
+    monkeypatch.setattr(renderer, "_read_selected_shapes", lambda path, selected: [
+        (shape, name, fill, label) for _, name, fill, label in selected
+    ])
+    monkeypatch.setattr(renderer, "_iter_land_shapes", lambda path, bounds: iter([land] if path == renderer.seismic_path else [shape]))
+    png = renderer.render(552, {"areas": [{"name": "区域", "grade": grade}]})
+    assert png is not None
+    projection = map_render._Projection((0, 0, 1, 1), map_size)
+
+    def pixel(image: Image.Image, lon: float, lat: float) -> tuple[int, int, int]:
+        x, y = projection(lon, lat)
+        return image.getpixel((665 + round(x), round(y)))
+
+    with Image.open(io.BytesIO(png)) as image:
+        assert pixel(image, 0.25, 0.5) == color
+        assert pixel(image, 0.5, 0.75) == color
+        assert pixel(image, 0.65, 0.4) == color
+        assert pixel(image, 0.5, 0.5) == map_render.LAND_COLOR
+        assert pixel(image, 0.65, 0.6) == map_render.LAND_COLOR
+
+
+def test_tsunami_label_anchor_lies_on_a_real_line() -> None:
+    shape = SimpleNamespace(parts=[0], points=[(0.25, 0.25), (0.25, 0.75), (0.75, 0.75)])
+    projection = map_render._Projection((0, 0, 1, 1), (400, 400))
+    point = map_render._line_midpoint(shape, projection)
+    assert point is not None
+    assert point[0] == pytest.approx(projection(0.25, 0.25)[0]) or point[1] == pytest.approx(projection(0.75, 0.75)[1])
+
+
+def test_tsunami_overlapping_lines_render_highest_warning_on_top(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = _renderer(tmp_path)
+    map_size = (400, 400)
+    shape = SimpleNamespace(
+        bbox=(0.25, 0.25, 0.75, 0.75), parts=[0],
+        points=[(0.25, 0.25), (0.25, 0.75), (0.75, 0.75)],
+    )
+    monkeypatch.setattr(map_render, "MAP_SIZE", map_size)
+    monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
+    monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_region_list", lambda *args: None)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
+    monkeypatch.setattr(renderer, "_iter_land_shapes", lambda path, bounds: iter([]))
+    monkeypatch.setattr(renderer, "_read_boundary_index", lambda path: (
+        {"high": "1", "low": "2"}, {"1": (0, "high"), "2": (1, "low")},
+    ))
+    monkeypatch.setattr(renderer, "_read_selected_shapes", lambda path, selected: [
+        (shape, name, color, label) for _, name, color, label in selected
+    ])
+    event = {"areas": [{"name": "high", "grade": "MajorWarning"}, {"name": "low", "grade": "Watch"}]}
+    png = renderer.render(552, event)
+    assert png is not None
+    x, y = map_render._Projection((0, 0, 1, 1), map_size)(0.25, 0.5)
+    with Image.open(io.BytesIO(png)) as image:
+        assert image.getpixel((665 + round(x), round(y))) == (150, 0, 150)
 
 
 def test_mercator_projection_has_expected_coordinates_and_preserves_angles() -> None:
@@ -535,6 +756,99 @@ def test_mercator_poles_are_clamped_and_invalid_bounds_rejected() -> None:
     assert map_render._mercator_y(-90) == pytest.approx(map_render._mercator_y(-map_render.MERCATOR_MAX_LATITUDE))
     with pytest.raises(ValueError, match="Invalid Mercator map bounds"):
         map_render._Projection((130, 90, 150, 90), (1000, 1000))
+
+
+def test_large_distribution_reduces_padding_and_canvas_width() -> None:
+    raw = (139.0, 32.0, 146.0, 45.0)
+    bounds = map_render._expanded_bounds(raw)
+    assert bounds == (138.0, 31.0, 147.0, 46.0)
+    size, top = map_render._map_layout(bounds, MAP_SIZE)
+    assert 1000 <= size[0] < MAP_SIZE[0] * 0.6
+    assert size[1] == MAP_SIZE[1]
+    projection = map_render._Projection(bounds, size, top)
+    old_bounds = (139 - 7 * 0.18, 32 - 13 * 0.18, 146 + 7 * 0.18, 45 + 13 * 0.18)
+    old = map_render._Projection(old_bounds, MAP_SIZE)
+    assert projection.scale / (size[0] + 665) > old.scale / (MAP_SIZE[0] + 665) * 1.5
+    for longitude in (raw[0], raw[2]):
+        for latitude in (raw[1], raw[3]):
+            x, y = projection(longitude, latitude)
+            assert 25 <= x <= size[0] - 25
+            assert 100 <= y <= size[1] - 50
+
+
+def test_small_bounds_keep_existing_padding_and_canvas() -> None:
+    bounds = map_render._expanded_bounds((135.25, 34.25, 135.75, 34.75))
+    assert bounds == (135.0, 34.0, 136.0, 35.0)
+    assert map_render._map_layout(bounds, MAP_SIZE) == (MAP_SIZE, 40)
+
+
+@pytest.mark.parametrize("bounds", [
+    (120, 35, 155, 36),
+    (139, 20, 140, 50),
+    (-179, -80, 179, 80),
+])
+def test_wide_map_layout_keeps_all_bounds_visible(bounds: tuple[float, float, float, float]) -> None:
+    expanded = map_render._expanded_bounds(bounds)
+    size, top = map_render._map_layout(expanded, MAP_SIZE)
+    projection = map_render._Projection(expanded, size, top)
+    assert 1000 <= size[0] <= MAP_SIZE[0]
+    for longitude in (bounds[0], bounds[2]):
+        for latitude in (bounds[1], bounds[3]):
+            x, y = projection(longitude, latitude)
+            assert 20 <= x <= size[0] - 20
+            assert 100 <= y <= size[1] - 50
+
+
+@pytest.mark.parametrize("code", [551, 552, 556])
+def test_wide_event_map_keeps_hypocenter_and_selected_regions_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int,
+) -> None:
+    renderer = _renderer(tmp_path)
+    boxes = [(139, 32, 140, 33), (145, 44, 146, 45)]
+    shapes = [
+        SimpleNamespace(
+            bbox=box, parts=[0], points=[
+                (box[0], box[1]), (box[2], box[1]), (box[2], box[3]),
+                (box[0], box[3]), (box[0], box[1]),
+            ],
+        )
+        for box in boxes
+    ]
+    monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
+    monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_intensity_markers", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_scale_legend", lambda *args: None)
+    monkeypatch.setattr(renderer, "_draw_region_list", lambda *args: None)
+    monkeypatch.setattr(renderer, "_iter_land_shapes", lambda path, bounds: iter([]))
+    names = ["south", "north"] + [f"extra-{i}" for i in range(148)]
+    monkeypatch.setattr(renderer, "_read_boundary_index", lambda path: (
+        {name: str(i) for i, name in enumerate(names)},
+        {str(i): (i % 2, name) for i, name in enumerate(names)},
+    ))
+    monkeypatch.setattr(renderer, "_read_selected_shapes", lambda path, selected: [
+        (shapes[index], name, color, label) for index, name, color, label in selected
+    ])
+    bounds = map_render._expanded_bounds((139, 32, 148, 45))
+    size, top = map_render._map_layout(bounds, MAP_SIZE)
+    projection = map_render._Projection(bounds, size, top)
+    for selected_names in (names[:2], names):
+        event: dict[str, Any] = {"hypocenter": {"longitude": 148, "latitude": 40}}
+        if code == 551:
+            event["points"] = [{"isArea": True, "addr": name, "scale": 30} for name in selected_names]
+        else:
+            event["areas"] = [{"name": name, "grade": "Warning", "scaleTo": 30} for name in selected_names]
+        png = renderer.render(code, event)
+        assert png is not None
+        with Image.open(io.BytesIO(png)) as image:
+            assert image.size == (size[0] + 665, size[1] + 80)
+            color = SCALE_RGB[30] if code == 551 else (map_render.SEA_COLOR if code == 552 else map_render.EEW_WARNING_COLOR)
+            for x, y in ((139.5, 32.5), (145.5, 44.5)):
+                px, py = projection(x, y)
+                assert image.getpixel((665 + round(px), round(py))) == color
+            x, y = projection(148, 40)
+            assert image.getpixel((665 + round(x), round(y))) == (200, 0, 0)
 
 
 @pytest.mark.parametrize("size", [(2200, 1500), (600, 1600)])

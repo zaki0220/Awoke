@@ -21,6 +21,10 @@ SCALE_RGB = {
     40: (250, 250, 100), 45: (255, 180, 0), 50: (255, 120, 0),
     55: (230, 0, 0), 60: (160, 0, 0), 70: (150, 0, 150),
 }
+SCALE_MARKERS = {
+    10: "1", 20: "2", 30: "3", 40: "4", 45: "5-", 50: "5+",
+    55: "6-", 60: "6+", 70: "7",
+}
 MAP_SIZE = (2200, 1500)
 PANEL_WIDTH = 650
 REGION_COLUMNS = 3
@@ -29,6 +33,13 @@ SEA_COLOR = (23, 30, 37)
 LAND_COLOR = (105, 111, 117)
 BOUNDARY_COLOR = (225, 230, 235)
 EEW_WARNING_COLOR = (255, 0, 0)
+TSUNAMI_GRADES = {
+    "Watch": ("津波注意報", (255, 255, 0), 1),
+    "Warning": ("津波警報", (255, 0, 0), 2),
+    "MajorWarning": ("大津波警報", (150, 0, 150), 3),
+}
+TSUNAMI_LINE_WIDTH = 6
+TSUNAMI_GRADE_PRIORITY = {label: priority for label, _, priority in TSUNAMI_GRADES.values()}
 MERCATOR_MAX_LATITUDE = 85.0511287798066
 
 
@@ -74,14 +85,10 @@ class MapRenderer:
         if lon is not None:
             min_x, max_x = min(min_x, lon), max(max_x, lon)
             min_y, max_y = min(min_y, lat), max(max_y, lat)
-        dx, dy = max(max_x - min_x, 0.4), max(max_y - min_y, 0.4)
-        margin_x, margin_y = max(dx * 0.18, 0.25), max(dy * 0.18, 0.25)
-        bounds = (
-            min_x - margin_x, max(-MERCATOR_MAX_LATITUDE, min_y - margin_y),
-            max_x + margin_x, min(MERCATOR_MAX_LATITUDE, max_y + margin_y),
-        )
-        projection = _Projection(bounds, MAP_SIZE)
-        visible_bounds = projection.visible_bounds(MAP_SIZE)
+        bounds = _expanded_bounds((min_x, min_y, max_x, max_y))
+        map_size, top_padding = _map_layout(bounds, MAP_SIZE)
+        projection = _Projection(bounds, map_size, top_padding)
+        visible_bounds = projection.visible_bounds(map_size)
         groups = self._region_groups(selected, code)
         legend_height = LEGEND_HEIGHT if code == 551 else 0
         column_width = self._region_column_width(groups)
@@ -90,23 +97,28 @@ class MapRenderer:
         list_height = 140 + sum(
             48 * (1 + math.ceil(len(items) / REGION_COLUMNS)) for _, _, items in groups
         )
-        image = Image.new("RGB", (MAP_SIZE[0] + panel_width, MAP_SIZE[1] + 80), SEA_COLOR)
-        map_image = Image.new("RGB", MAP_SIZE, SEA_COLOR)
+        image = Image.new("RGB", (map_size[0] + panel_width, map_size[1] + 80), SEA_COLOR)
+        map_image = Image.new("RGB", map_size, SEA_COLOR)
         draw = ImageDraw.Draw(map_image)
         self._draw_land(draw, visible_bounds, projection)
         if code == 552:
             for shape in self._iter_land_shapes(boundary_path, visible_bounds):
                 _draw_boundary(draw, shape, projection)
-        for shape, _, color, _ in selected:
-            _draw_shape(draw, shape, projection, color, outline=BOUNDARY_COLOR)
-        self._draw_region_labels(draw, selected, projection)
+        if code == 552:
+            for shape, _, color, label in sorted(selected, key=lambda item: TSUNAMI_GRADE_PRIORITY[item[3]]):
+                _draw_boundary(draw, shape, projection, color, TSUNAMI_LINE_WIDTH)
+            self._draw_region_labels(draw, selected, projection)
+        else:
+            for shape, _, color, _ in selected:
+                _draw_shape(draw, shape, projection, color, outline=BOUNDARY_COLOR)
+            self._draw_intensity_markers(draw, selected, projection, code)
         if lon is not None:
             px, py = projection(lon, lat)
             _draw_hypocenter(draw, px, py)
         title = event.get("title", "地震情報")
         if event.get("max_scale_text"):
             title += f"  最大震度{event['max_scale_text']}"
-        draw.rectangle((0, 0, MAP_SIZE[0], 75), fill=SEA_COLOR)
+        draw.rectangle((0, 0, map_size[0], 75), fill=SEA_COLOR)
         draw.text((40, 12), title, fill=BOUNDARY_COLOR, font=_font(46))
         image.paste(map_image, (panel_width, 0))
         draw = ImageDraw.Draw(image)
@@ -114,7 +126,7 @@ class MapRenderer:
             self._draw_scale_legend(draw)
         list_image = Image.new("RGB", (list_width, list_height), SEA_COLOR)
         self._draw_region_list(ImageDraw.Draw(list_image), groups, code, 0, column_width)
-        available_height = max(1, MAP_SIZE[1] - legend_height)
+        available_height = max(1, map_size[1] - legend_height)
         list_image.thumbnail((panel_width, available_height), Image.Resampling.LANCZOS)
         image.paste(list_image, (0, legend_height))
         footer_font = _font(24)
@@ -135,9 +147,18 @@ class MapRenderer:
         if code == 552:
             for area in event.get("areas", []):
                 name = area.get("name")
-                if name in by_name:
-                    grade = {"Watch": "津波注意報", "Warning": "津波警報", "MajorWarning": "大津波警報"}
-                    result[by_name[name]] = ((255, 153, 0), grade.get(area.get("grade"), "津波情報"))
+                grade = area.get("grade")
+                if name not in by_name:
+                    LOG.warning("Skipping unmapped tsunami area: name=%s", name)
+                    continue
+                if grade not in TSUNAMI_GRADES:
+                    LOG.warning("Skipping tsunami area with unknown grade: name=%s grade=%s", name, grade)
+                    continue
+                label, color, priority = TSUNAMI_GRADES[grade]
+                boundary = by_name[name]
+                previous = result.get(boundary)
+                if previous is None or priority > TSUNAMI_GRADE_PRIORITY[previous[1]]:
+                    result[boundary] = (color, label)
             return result
 
         if code == 556:
@@ -183,19 +204,54 @@ class MapRenderer:
     ) -> None:
         font = _font(27)
         occupied: list[tuple[float, float, float, float]] = []
-        for shape, name, _, label in selected:
-            point = _interior_point(shape)
+        for shape, _, _, label in selected:
+            point = _line_midpoint(shape, projection)
             if point is None:
                 continue
-            x, y = projection(*point)
-            text = f"{name} {label}"
+            x, y = point
+            text = label
             box = draw.textbbox((x, y - 10), text, font=font, anchor="mb", stroke_width=3)
-            if box[0] < 0 or box[2] >= MAP_SIZE[0] or box[1] < 75 or box[3] >= MAP_SIZE[1]:
+            if box[0] < 0 or box[2] >= projection.size[0] or box[1] < 75 or box[3] >= projection.size[1]:
                 continue
             if any(box[0] < b[2] and box[2] > b[0] and box[1] < b[3] and box[3] > b[1] for b in occupied):
                 continue
             draw.ellipse((x - 5, y - 5, x + 5, y + 5), fill=(15, 20, 25), outline="white", width=2)
             draw.text((x, y - 10), text, font=font, anchor="mb", fill=(15, 20, 25), stroke_width=3, stroke_fill="white")
+            occupied.append(box)
+
+    @staticmethod
+    def _draw_intensity_markers(
+        draw: ImageDraw.ImageDraw,
+        selected: list[tuple[Any, str, tuple[int, int, int], str]],
+        projection: _Projection,
+        code: int,
+    ) -> None:
+        labels = {
+            (f"予想{label}" if code == 556 else label): scale
+            for scale, label in SCALE_LABELS_TEXT.items()
+        }
+        occupied: list[tuple[float, float, float, float]] = []
+        ordered = sorted(selected, key=lambda item: -labels.get(item[3], 0))
+        for shape, _, _, label in ordered:
+            scale = labels.get(label)
+            if scale is None:
+                continue
+            point = _interior_point(shape)
+            if point is None:
+                continue
+            x, y = projection(*point)
+            box = (round(x) - 22, round(y) - 22, round(x) + 22, round(y) + 22)
+            if box[0] < 0 or box[2] >= projection.size[0] or box[1] < 75 or box[3] >= projection.size[1]:
+                continue
+            if any(box[0] <= b[2] and box[2] >= b[0] and box[1] <= b[3] and box[3] >= b[1] for b in occupied):
+                continue
+            color = SCALE_RGB[scale]
+            text_color = (15, 20, 25) if 299 * color[0] + 587 * color[1] + 114 * color[2] >= 150000 else (255, 255, 255)
+            draw.rectangle(box, fill=color, outline=(15, 20, 25), width=3)
+            draw.rectangle((box[0] + 3, box[1] + 3, box[2] - 3, box[3] - 3), outline=BOUNDARY_COLOR, width=2)
+            text = SCALE_MARKERS[scale]
+            font, (left, top, right, bottom) = _marker_font(draw, text)
+            draw.text((round(x) - (left + right) / 2, round(y) - (top + bottom) / 2), text, fill=text_color, font=font)
             occupied.append(box)
 
     @staticmethod
@@ -211,7 +267,7 @@ class MapRenderer:
         if code == 556:
             rank = {f"予想{label}": scale for scale, label in SCALE_LABELS_TEXT.items()}
         if code == 552:
-            rank = {"大津波警報": 3, "津波警報": 2, "津波注意報": 1}
+            rank = TSUNAMI_GRADE_PRIORITY
         return [
             (label, color, sorted(names))
             for label, (color, names) in sorted(grouped.items(), key=lambda item: (-rank.get(item[0], 0), item[0]))
@@ -307,18 +363,46 @@ def _mercator_y(latitude: float) -> float:
     return math.degrees(math.asinh(math.tan(math.radians(latitude))))
 
 
+def _expanded_bounds(
+    bounds: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    min_x, min_y, max_x, max_y = bounds
+    dx, dy = max(max_x - min_x, 0.4), max(max_y - min_y, 0.4)
+    margin_x = min(max(dx * 0.18, 0.25), 1.0)
+    margin_y = min(max(dy * 0.18, 0.25), 1.0)
+    return (
+        min_x - margin_x, max(-MERCATOR_MAX_LATITUDE, min_y - margin_y),
+        max_x + margin_x, min(MERCATOR_MAX_LATITUDE, max_y + margin_y),
+    )
+
+
+def _map_layout(
+    bounds: tuple[float, float, float, float], size: tuple[int, int],
+) -> tuple[tuple[int, int], int]:
+    min_x, min_y, max_x, max_y = bounds
+    width, height = size
+    projected_height = _mercator_y(max_y) - _mercator_y(min_y)
+    if width <= 1000 or max(max_x - min_x, projected_height) <= 5:
+        return size, 40
+    if projected_height <= 0:
+        raise ValueError("Invalid Mercator map bounds")
+    desired_width = math.ceil(40 + (height - 150) * (max_x - min_x) / projected_height)
+    return (min(width, max(1000, desired_width)), height), 100
+
+
 class _Projection:
-    def __init__(self, bounds: tuple[float, float, float, float], size: tuple[int, int]) -> None:
+    def __init__(self, bounds: tuple[float, float, float, float], size: tuple[int, int], top_padding: int = 40) -> None:
         min_x, min_y, max_x, max_y = bounds
         width, height = size
+        self.size = size
         self.min_x = min_x
         self.max_y = _mercator_y(max_y)
         projected_height = self.max_y - _mercator_y(min_y)
         if max_x <= min_x or projected_height <= 0:
             raise ValueError("Invalid Mercator map bounds")
-        self.scale = min((width - 40) / (max_x - min_x), (height - 90) / projected_height)
+        self.scale = min((width - 40) / (max_x - min_x), (height - top_padding - 50) / projected_height)
         self.offset_x = (width - (max_x - min_x) * self.scale) / 2
-        self.offset_y = 40 + (height - 90 - projected_height * self.scale) / 2
+        self.offset_y = top_padding + (height - top_padding - 50 - projected_height * self.scale) / 2
 
     def __call__(self, longitude: float, latitude: float) -> tuple[float, float]:
         return (
@@ -375,6 +459,17 @@ def _draw_hypocenter(draw: ImageDraw.ImageDraw, x: float, y: float) -> None:
         draw.line(line, fill=(200, 0, 0), width=8)
 
 
+def _marker_font(
+    draw: ImageDraw.ImageDraw, text: str,
+) -> tuple[ImageFont.FreeTypeFont, tuple[int, int, int, int]]:
+    for size in range(27, 9, -1):
+        font = _font(size)
+        box = draw.textbbox((0, 0), text, font=font)
+        if box[2] - box[0] <= 34 and box[3] - box[1] <= 34:
+            return font, box
+    raise ValueError(f"Intensity marker text does not fit: {text}")
+
+
 def _draw_shape(
     draw: ImageDraw.ImageDraw,
     shape: Any,
@@ -391,12 +486,28 @@ def _draw_shape(
 
 def _draw_boundary(
     draw: ImageDraw.ImageDraw, shape: Any, projection: _Projection,
+    color: tuple[int, int, int] = BOUNDARY_COLOR, width: int = 1,
 ) -> None:
     indices = list(shape.parts) + [len(shape.points)]
     for start, end in zip(indices, indices[1:]):
-        ring = [projection(x, y) for x, y in shape.points[start:end]]
-        if len(ring) >= 2:
-            draw.line(ring + [ring[0]], fill=BOUNDARY_COLOR, width=1)
+        line = [projection(x, y) for x, y in shape.points[start:end]]
+        if len(line) >= 2:
+            draw.line(line, fill=color, width=width)
+
+
+def _line_midpoint(shape: Any, projection: _Projection) -> tuple[float, float] | None:
+    indices = list(shape.parts) + [len(shape.points)]
+    best: tuple[float, tuple[float, float], tuple[float, float]] | None = None
+    for start, end in zip(indices, indices[1:]):
+        line = shape.points[start:end]
+        for first, second in zip(line, line[1:]):
+            a, b = projection(*first), projection(*second)
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            if best is None or length > best[0]:
+                best = (length, a, b)
+    if best is None or best[0] == 0:
+        return None
+    return ((best[1][0] + best[2][0]) / 2, (best[1][1] + best[2][1]) / 2)
 
 
 @lru_cache(maxsize=16)
