@@ -10,8 +10,11 @@ from typing import Any
 
 from websockets.asyncio.client import ClientConnection, connect
 
+from awoke import __version__
+
 LOG = logging.getLogger(__name__)
 WS_URL = "wss://api.p2pquake.net/v2/ws"
+SANDBOX_WS_URL = "wss://api-realtime-sandbox.p2pquake.net/v2/ws"
 HISTORY_URL = "https://api.p2pquake.net/v2/history"
 WATCH_CODES = {551, 552, 556}
 
@@ -21,7 +24,7 @@ async def fetch_history() -> list[dict[str, Any]]:
     url = f"{HISTORY_URL}?{query}"
 
     def request() -> list[dict[str, Any]]:
-        req = urllib.request.Request(url, headers={"User-Agent": "Awoke/0.1"})
+        req = urllib.request.Request(url, headers={"User-Agent": f"Awoke/{__version__}"})
         with urllib.request.urlopen(req, timeout=20) as response:
             payload = json.loads(response.read())
         if not isinstance(payload, list):
@@ -31,8 +34,9 @@ async def fetch_history() -> list[dict[str, Any]]:
     return await asyncio.to_thread(request)
 
 
-async def open_stream() -> ClientConnection:
-    return await connect(WS_URL, open_timeout=20, ping_interval=20, ping_timeout=20, max_size=2**20)
+async def open_stream(test_mode: bool = False) -> ClientConnection:
+    url = SANDBOX_WS_URL if test_mode else WS_URL
+    return await connect(url, open_timeout=20, ping_interval=20, ping_timeout=20, max_size=2**20)
 
 
 async def stream_reader(socket: ClientConnection, queue: asyncio.Queue[dict[str, Any]]) -> None:

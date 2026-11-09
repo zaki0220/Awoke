@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import io
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
+import shapefile
+from PIL import Image, ImageDraw
 
+from awoke import map_render
 from awoke.config import Config
+from awoke.map_render import MapRenderer
 from awoke.service import EventProcessor, Service, _distance_km, _format_message, _is_expired_report
 from awoke.store import Store
 
@@ -18,10 +23,12 @@ _TEST_EVENT_TIME = datetime.now(_JST).strftime("%Y/%m/%d %H:%M:%S")
 class FakeDiscord:
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.sent_images: list[bytes | None] = []
         self.edited: list[tuple[str, str]] = []
 
     async def send(self, content: str, image: bytes | None = None) -> str:
         self.sent.append(content)
+        self.sent_images.append(image)
         return f"message-{len(self.sent)}"
 
     async def edit(self, message_id: str, content: str, image: bytes | None = None) -> None:
@@ -75,6 +82,28 @@ def test_551_reports_with_same_time_merge_and_edit_message(tmp_path: Path) -> No
     assert event["state"]["hypocenter"]["magnitude"] == 5.5
     asyncio.run(processor.process(_quake("report-4", "DetailScale", scale=50, lon=142.2, lat=36.2)))
     assert discord.edited and discord.edited[-1][0] == "message-1"
+    store.close()
+
+
+def test_551_all_unmapped_still_sends_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    mapping = tmp_path / "mapping.csv"
+    mapping.write_text("code,status,prefecture,source_name,boundary_code\n", encoding="utf-8")
+    renderer = MapRenderer(mapping, tmp_path / "seismic.shp", tmp_path / "tsunami.shp", tmp_path / "land.shp")
+    monkeypatch.setattr(renderer, "_read_boundary_index", lambda path: ({"区域": "1"}, {"1": (0, "区域")}))
+    processor.renderer = renderer
+    report = _quake("unmapped", "DetailScale", scale=45)
+    report["points"] = [
+        {"isArea": False, "pref": "鹿児島県", "addr": "鹿児島十島村中之島徳之尾", "scale": 45},
+    ]
+    asyncio.run(processor.process(report))
+    assert len(discord.sent) == 1
+    assert "最大震度: 5弱" in discord.sent[0]
+    assert discord.sent_images == [None]
     store.close()
 
 
@@ -140,6 +169,37 @@ def test_p2p556_serial_order_and_cancellation(tmp_path: Path) -> None:
     store.close()
 
 
+def test_eew_unknown_forecast_sends_red_map_with_notification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    seismic = tmp_path / "seismic.shp"
+    with shapefile.Writer(str(seismic), shapeType=shapefile.POLYGON, encoding="utf-8") as writer:
+        writer.field("name", "C", size=40)
+        writer.field("code", "C", size=10)
+        writer.poly([[(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75), (0.25, 0.25)]])
+        writer.record("茨城県南部", "221")
+    processor.renderer = MapRenderer(tmp_path / "mapping.csv", seismic, tmp_path / "tsunami.shp", tmp_path / "land.shp")
+    monkeypatch.setattr(map_render, "MAP_SIZE", (200, 200))
+    monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(processor.renderer, "_region_column_width", lambda groups: 200)
+    monkeypatch.setattr(processor.renderer, "_draw_region_labels", lambda *args: None)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
+    report = {
+        "code": 556, "id": "eew-unknown",
+        "issue": {"eventId": "unknown-event", "serial": "1"},
+        "areas": [{"name": "茨城県南部", "scaleTo": -1}],
+    }
+    asyncio.run(processor.process(report))
+    assert "茨城県南部: 予想震度 不明" in discord.sent[0]
+    assert discord.sent_images[0] is not None
+    with Image.open(io.BytesIO(discord.sent_images[0])) as image:
+        assert image.getpixel((665 + 100, 95)) == map_render.EEW_WARNING_COLOR
+    store.close()
+
+
 def test_tsunami_same_report_update_edits_and_preserves_known_areas(tmp_path: Path) -> None:
     import asyncio
 
@@ -165,6 +225,33 @@ def test_tsunami_same_report_update_edits_and_preserves_known_areas(tmp_path: Pa
 def test_unknown_intensity_is_not_formatted_as_zero() -> None:
     message = _format_message(551, {"event_time": _TEST_EVENT_TIME, "max_scale": None})
     assert "最大震度" not in message
+
+
+@pytest.mark.parametrize("code,state", [
+    (551, {"hypocenter": {"magnitude": 4.4}}),
+    (552, {"areas": []}),
+    (556, {"earthquake": {"hypocenter": {"magnitude": 4.4}}}),
+])
+def test_message_source_removed_and_magnitude_formatted(code: int, state: dict[str, Any]) -> None:
+    message = _format_message(code, state)
+    assert "情報提供: P2P地震情報" not in message
+    if code != 552:
+        assert "マグニチュード: M4.4" in message
+
+
+def test_earthquake_message_displays_minute_and_omits_observation_count() -> None:
+    state = {"event_time": "2023/05/11 18:52:34", "max_scale": 40, "points": [{"scale": 40}]}
+    message = _format_message(551, state)
+    assert "発生時刻: 2023/05/11 18:52頃" in message
+    assert "18:52:34" not in message
+    assert "観測地域・地点数" not in message
+    assert "最大震度: 4" in message
+
+
+def test_unexpected_event_time_is_preserved_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+    message = _format_message(551, {"event_time": "発生時刻不明"})
+    assert "発生時刻: 発生時刻不明" in message
+    assert "Unexpected earthquake event time format" in caplog.text
 
 
 def test_distance_calculation() -> None:
@@ -212,3 +299,205 @@ def test_history_reconciliation_notifies_only_unseen_reports(tmp_path: Path, mon
     asyncio.run(service._reconcile_history(notify_new=True))
     assert len(discord.sent) == 1
     store.close()
+
+
+@pytest.mark.parametrize("value", ['"true"', "1"])
+def test_test_mode_requires_boolean(tmp_path: Path, value: str) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(f"[awoke]\ntest_mode = {value}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="test_mode must be a boolean"):
+        Config.load(config_path)
+
+
+def test_test_mode_database_is_separate_from_production(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite3"
+    production = Config(database=database)
+    test_config = Config(database=database, test_mode=True)
+    assert production.effective_database == database
+    assert test_config.effective_database == tmp_path / "state.sqlite3.sandbox"
+    production_store = Store(production.effective_database)
+    sandbox_store = Store(test_config.effective_database)
+    production_store.mark_report(551, "production-report", {}, "production-event")
+    assert not sandbox_store.report_seen(551, "production-report")
+    sandbox_store.mark_report(551, "sandbox-report", {}, "sandbox-event")
+    assert not production_store.report_seen(551, "sandbox-report")
+    sandbox_store.close()
+    production_store.close()
+
+
+def test_test_mode_notifies_old_reports_and_labels_new_and_edited_messages(tmp_path: Path) -> None:
+    import asyncio
+
+    class RecordingRenderer:
+        def __init__(self) -> None:
+            self.titles: list[str] = []
+
+        def render(self, code: int, state: dict[str, Any]) -> None:
+            self.titles.append(state["title"])
+            return None
+
+    config = Config(test_mode=True, database=tmp_path / "state.sqlite3")
+    store = Store(config.effective_database)
+    discord = FakeDiscord()
+    renderer = RecordingRenderer()
+    processor = EventProcessor(config, store, discord, renderer)
+    report = _quake("sandbox-1", "DetailScale", scale=40)
+    report["earthquake"]["time"] = "2023/04/01 00:00:00"
+    asyncio.run(processor.process(report))
+    asyncio.run(processor.process(report))
+    assert len(discord.sent) == 1
+    assert len(discord.edited) == 1
+    assert "【テスト】" in discord.sent[0]
+    assert "【テスト】" in discord.edited[0][1]
+    assert all("【テスト】" in title for title in renderer.titles)
+    store.close()
+
+
+def test_sandbox_underscore_id_is_used_for_notifications_and_edits(tmp_path: Path) -> None:
+    import asyncio
+
+    config = Config(test_mode=True, database=tmp_path / "state.sqlite3")
+    store = Store(config.effective_database)
+    discord = FakeDiscord()
+    processor = EventProcessor(config, store, discord, FakeRenderer())
+    report = _quake("sandbox-1", "DetailScale", scale=40)
+    report["_id"] = report.pop("id")
+    report["earthquake"]["time"] = "2023/04/01 00:00:00"
+    asyncio.run(processor.process(report))
+    asyncio.run(processor.process(report))
+    assert store.report_seen(551, "sandbox-1")
+    assert len(discord.sent) == 1
+    assert len(discord.edited) == 1
+    assert "id" not in report
+    store.close()
+
+
+@pytest.mark.parametrize("test_mode,sandbox_id", [(False, "sandbox-1"), (True, ""), (True, None)])
+def test_missing_or_invalid_sandbox_id_is_not_processed(
+    tmp_path: Path, test_mode: bool, sandbox_id: str | None
+) -> None:
+    import asyncio
+
+    config = Config(test_mode=test_mode, database=tmp_path / "state.sqlite3")
+    store = Store(config.effective_database)
+    discord = FakeDiscord()
+    processor = EventProcessor(config, store, discord, FakeRenderer())
+    report = _quake("sandbox-1", "DetailScale", scale=40)
+    del report["id"]
+    report["_id"] = sandbox_id
+    asyncio.run(processor.process(report))
+    assert not discord.sent
+    assert not store.report_seen(551, "sandbox-1")
+    store.close()
+
+
+def test_test_mode_startup_does_not_seed_history(tmp_path: Path, monkeypatch: Any) -> None:
+    import asyncio
+
+    config = Config(test_mode=True, database=tmp_path / "state.sqlite3")
+    store = Store(config.effective_database)
+    discord = FakeDiscord()
+    service = Service(config, EventProcessor(config, store, discord, FakeRenderer()), store)
+    report = _quake("sandbox-1", "DetailScale", scale=40)
+    report["earthquake"]["time"] = "2023/04/01 00:00:00"
+
+    async def fail_if_called() -> list[dict[str, Any]]:
+        raise AssertionError("test mode must not fetch production history")
+
+    monkeypatch.setattr("awoke.service.fetch_history", fail_if_called)
+
+    async def scenario() -> None:
+        await service.queue.put(report)
+        await service._initialize()
+        await service.processor.process(service.queue.get_nowait())
+
+    asyncio.run(scenario())
+    assert len(discord.sent) == 1
+    store.close()
+
+
+@pytest.mark.parametrize("test_mode", [False, True])
+def test_websocket_endpoint_matches_mode(test_mode: bool, monkeypatch: Any) -> None:
+    import asyncio
+
+    from awoke import p2p
+
+    urls: list[str] = []
+
+    async def connect(url: str, **kwargs: Any) -> object:
+        urls.append(url)
+        return object()
+
+    monkeypatch.setattr(p2p, "connect", connect)
+    asyncio.run(p2p.open_stream(test_mode))
+    assert urls == [p2p.SANDBOX_WS_URL if test_mode else p2p.WS_URL]
+
+
+def test_sandbox_reconnect_processes_stream_without_history(tmp_path: Path, monkeypatch: Any) -> None:
+    import asyncio
+
+    config = Config(
+        test_mode=True,
+        database=tmp_path / "state.sqlite3",
+        reconnect_min_seconds=0.01,
+        reconnect_max_seconds=0.01,
+    )
+    store = Store(config.effective_database)
+    modes: list[bool] = []
+
+    class Socket:
+        async def __aenter__(self) -> object:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    async def open_stream(test_mode: bool) -> Socket:
+        modes.append(test_mode)
+        return Socket()
+
+    async def history() -> list[dict[str, Any]]:
+        raise AssertionError("sandbox must not fetch production history")
+
+    async def scenario() -> None:
+        delivered = asyncio.Event()
+        second_delivered = asyncio.Event()
+
+        class SignallingDiscord(FakeDiscord):
+            async def send(self, content: str, image: bytes | None = None) -> str:
+                message_id = await super().send(content, image)
+                if len(self.sent) == 1:
+                    delivered.set()
+                else:
+                    second_delivered.set()
+                return message_id
+
+        discord = SignallingDiscord()
+        service = Service(config, EventProcessor(config, store, discord, FakeRenderer()), store)
+
+        async def reader(socket: object, queue: asyncio.Queue[dict[str, Any]]) -> None:
+            report = _quake(f"sandbox-{len(modes)}", "DetailScale", scale=40)
+            report["earthquake"]["time"] = f"2023/04/0{len(modes)} 00:00:00"
+            await queue.put(report)
+            if len(modes) == 1:
+                await delivered.wait()
+            else:
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr("awoke.service.open_stream", open_stream)
+        monkeypatch.setattr("awoke.service.stream_reader", reader)
+        monkeypatch.setattr("awoke.service.fetch_history", history)
+        task = asyncio.create_task(service.run())
+        try:
+            await asyncio.wait_for(second_delivered.wait(), timeout=3)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        assert modes == [True, True]
+        assert len(discord.sent) == 2
+        assert all("【テスト】" in content for content in discord.sent)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        store.close()

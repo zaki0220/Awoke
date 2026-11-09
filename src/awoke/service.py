@@ -32,6 +32,10 @@ class EventProcessor:
         self.renderer = renderer
 
     async def process(self, payload: dict[str, Any], notify: bool = True) -> None:
+        if self.config.test_mode and "id" not in payload:
+            sandbox_id = payload.get("_id")
+            if isinstance(sandbox_id, str) and sandbox_id:
+                payload = {**payload, "id": sandbox_id}
         try:
             code = int(payload.get("code", 0))
             report_id = str(payload["id"])
@@ -40,7 +44,7 @@ class EventProcessor:
             return
         if code not in (551, 552, 556):
             return
-        if _is_expired_report(code, payload, self.config.retention_days):
+        if not self.config.test_mode and _is_expired_report(code, payload, self.config.retention_days):
             LOG.info("Ignoring report older than retention window: code=%s id=%s", code, report_id)
             return
         if self.store.report_seen(code, report_id):
@@ -193,8 +197,7 @@ class EventProcessor:
         should_send = code != 551 or state.get("max_scale", -1) >= self.config.threshold
         if not message_id and not should_send:
             return
-        content = _format_message(code, state)
-        image = self.renderer.render(code, state)
+        content, image = self._notification(code, state)
         if message_id:
             await self._edit(code, event_key, state, message_id, content, image)
             return
@@ -216,8 +219,7 @@ class EventProcessor:
         image: bytes | None = None,
     ) -> None:
         if content is None:
-            content = _format_message(code, state)
-            image = self.renderer.render(code, state)
+            content, image = self._notification(code, state)
         try:
             await self.discord.edit(message_id, content, image)
         except Exception:
@@ -228,6 +230,14 @@ class EventProcessor:
                     self.store.set_message_id(event_key, new_id)
             except Exception:
                 LOG.exception("Discord replacement post failed event=%s", event_key)
+
+    def _notification(self, code: int, state: dict[str, Any]) -> tuple[str, bytes | None]:
+        content = _format_message(code, state)
+        map_state = state
+        if self.config.test_mode:
+            content = "**【テスト】過去のサンドボックスデータです。実際の速報ではありません。**\n" + content
+            map_state = {**state, "title": f"【テスト】{state.get('title', '')}"}
+        return content, self.renderer.render(code, map_state)
 
 
 class Service:
@@ -242,14 +252,14 @@ class Service:
         delay = self.config.reconnect_min_seconds
         while True:
             try:
-                async with await open_stream() as socket:
-                    LOG.info("Connected to P2P WebSocket")
+                async with await open_stream(self.config.test_mode) as socket:
+                    LOG.info("Connected to P2P WebSocket mode=%s", "test" if self.config.test_mode else "production")
                     reader = asyncio.create_task(stream_reader(socket, self.queue))
                     try:
                         if not self.initialized:
                             await self._initialize()
                             self.initialized = True
-                        else:
+                        elif not self.config.test_mode:
                             await self._reconcile_history(notify_new=True)
                         delay = self.config.reconnect_min_seconds
                         await self._consume_until_reader_ends(reader)
@@ -275,6 +285,9 @@ class Service:
         await reader
 
     async def _initialize(self) -> None:
+        if self.config.test_mode:
+            LOG.warning("Test mode: sandbox data will be notified; history reconciliation is disabled")
+            return
         known_ids = await self._reconcile_history()
         buffered: list[dict[str, Any]] = []
         while True:
@@ -320,7 +333,9 @@ async def _run(config_path: Path) -> None:
         stream=sys.stdout,
     )
     credential = webhook_credential()
-    store = Store(config.database)
+    if config.test_mode:
+        LOG.warning("Test mode enabled: past sandbox data will be sent to the configured Discord webhook")
+    store = Store(config.effective_database)
     discord = DiscordClient(credential)
     renderer = MapRenderer(config.area_mapping, config.seismic_shapefile, config.tsunami_shapefile, config.land_shapefile)
     service = Service(config, EventProcessor(config, store, discord, renderer), store)
@@ -413,23 +428,29 @@ def _valid_measure(value: Any, invalid: int) -> Any:
     return value if value is not None and value != invalid else None
 
 
+def _format_event_time(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y/%m/%d %H:%M:%S")
+    except ValueError:
+        LOG.warning("Unexpected earthquake event time format; displaying original value")
+        return value
+    return parsed.strftime("%Y/%m/%d %H:%M") + "頃"
+
+
 def _format_message(code: int, state: dict[str, Any]) -> str:
     if code == 551:
         lines = ["**地震情報（観測）**"]
         hypocenter = state.get("hypocenter") or {}
         if state.get("event_time"):
-            lines.append(f"発生時刻: {state['event_time']}")
+            lines.append(f"発生時刻: {_format_event_time(state['event_time'])}")
         if hypocenter.get("name"):
             lines.append(f"震源: {hypocenter['name']}")
         if state.get("max_scale") in SCALE_LABELS:
             lines.append(f"最大震度: {SCALE_LABELS[state['max_scale']]}")
         if hypocenter.get("magnitude") is not None:
-            lines.append(f"M: {hypocenter['magnitude']}")
+            lines.append(f"マグニチュード: M{hypocenter['magnitude']}")
         if hypocenter.get("depth") is not None:
             lines.append(f"深さ: {hypocenter['depth']} km")
-        if state.get("points"):
-            lines.append(f"観測地域・地点数: {len(state['points'])}")
-        lines.append("情報提供: P2P地震情報")
         return "\n".join(lines)
     if code == 552:
         lines = ["**津波情報**"]
@@ -452,7 +473,6 @@ def _format_message(code: int, state: dict[str, Any]) -> str:
                 if arrival:
                     bits.append(str(arrival))
                 lines.append(" / ".join(bits))
-        lines.append("情報提供: P2P地震情報")
         return "\n".join(lines)
     issue = state.get("issue") or {}
     earthquake = state.get("earthquake") or {}
@@ -465,9 +485,8 @@ def _format_message(code: int, state: dict[str, Any]) -> str:
     if hypocenter.get("name"):
         lines.append(f"震源: {hypocenter['name']}")
     if hypocenter.get("magnitude") is not None and hypocenter.get("magnitude") >= 0:
-        lines.append(f"M: {hypocenter['magnitude']}")
+        lines.append(f"マグニチュード: M{hypocenter['magnitude']}")
     for area in state.get("areas", []):
         scale = SCALE_LABELS.get(area.get("scaleTo"), "不明")
         lines.append(f"{area.get('name', '')}: 予想震度 {scale}")
-    lines.append("情報提供: P2P地震情報")
     return "\n".join(lines)

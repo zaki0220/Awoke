@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from awoke import __version__
+
 LOG = logging.getLogger(__name__)
 
 
@@ -40,6 +42,8 @@ class DiscordClient:
 
     def _request(self, method: str, url: str, content: str, image: bytes | None) -> str | None:
         payload: dict[str, Any] = {"content": content}
+        if method == "PATCH":
+            payload["attachments"] = []
         if image is None:
             body = json.dumps(payload).encode("utf-8")
             headers = {"Content-Type": "application/json"}
@@ -54,6 +58,7 @@ class DiscordClient:
                 "Content-Type: image/png\r\n\r\n"
             ).encode() + image + f"\r\n--{boundary}--\r\n".encode()
             headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        headers["User-Agent"] = f"DiscordBot (https://github.com/zaki0220/Awoke, {__version__})"
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=15) as response:

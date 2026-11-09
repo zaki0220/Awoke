@@ -9,17 +9,24 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Config:
+    test_mode: bool = False
     threshold: int = 40
     log_level: str = "INFO"
     database: Path = Path("/var/lib/awoke/awoke.sqlite3")
     area_mapping: Path = Path("/opt/awoke/share/area_mapping.csv")
-    seismic_shapefile: Path = Path("/opt/awoke/share/20240520_AreaForecastLocalE_GIS/地震情報／細分区域.shp")
-    tsunami_shapefile: Path = Path("/opt/awoke/share/20240520_AreaTsunami_GIS/津波予報区.shp")
+    seismic_shapefile: Path = Path("/opt/awoke/share/20240520_AreaForecastLocalE_GIS/seismic.shp")
+    tsunami_shapefile: Path = Path("/opt/awoke/share/20240520_AreaTsunami_GIS/tsunami.shp")
     land_shapefile: Path = Path("/opt/awoke/share/ne_10m_land/ne_10m_land.shp")
     event_match_radius_km: float = 100.0
     retention_days: int = 7
     reconnect_min_seconds: float = 2.0
     reconnect_max_seconds: float = 60.0
+
+    @property
+    def effective_database(self) -> Path:
+        if not self.test_mode:
+            return self.database
+        return self.database.with_name(f"{self.database.name}.sandbox")
 
     @classmethod
     def load(cls, path: Path) -> Config:
@@ -39,6 +46,8 @@ class Config:
             if key in converted:
                 converted[key] = Path(converted[key])
         config = cls(**converted)
+        if not isinstance(config.test_mode, bool):
+            raise ValueError("test_mode must be a boolean")
         if (
             not isinstance(config.threshold, int)
             or isinstance(config.threshold, bool)
@@ -73,6 +82,9 @@ def webhook_credential() -> str:
         raise RuntimeError("CREDENTIALS_DIRECTORY is not set; start through systemd LoadCredential")
     path = Path(directory) / "discord-webhook-url"
     value = path.read_text(encoding="utf-8").strip()
-    if not value.startswith("https://discord.com/api/webhooks/"):
+    if not value.startswith((
+        "https://discord.com/api/webhooks/",
+        "https://canary.discord.com/api/webhooks/",
+    )):
         raise ValueError("Discord webhook credential has an unexpected URL format")
     return value
