@@ -1,0 +1,74 @@
+[
+    {
+        "areas": [
+            {
+                "arrivalTime": "2026/11/08 01:04:49",
+                "kindCode": "19",
+                "name": "愛知県西部",
+                "pref": "愛知",
+                "scaleFrom": 45,
+                "scaleTo": 45
+            },
+            {
+                "arrivalTime": null,
+                "kindCode": "11",
+                "name": "静岡県西部",
+                "pref": "静岡",
+                "scaleFrom": 40,
+                "scaleTo": 40
+            },
+            {
+                "arrivalTime": null,
+                "kindCode": "11",
+                "name": "愛知県東部",
+                "pref": "愛知",
+                "scaleFrom": 40,
+                "scaleTo": 40
+            },
+            {
+                "arrivalTime": "2026/11/08 01:04:50",
+                "kindCode": "10",
+                "name": "静岡県中部",
+                "pref": "静岡",
+                "scaleFrom": 30,
+                "scaleTo": 40
+            },
+            {
+                "arrivalTime": "2026/11/08 01:04:51",
+                "kindCode": "10",
+                "name": "岐阜県美濃東部",
+                "pref": "岐阜",
+                "scaleFrom": 30,
+                "scaleTo": 40
+            }
+        ],
+        "cancelled": false,
+        "code": 556,
+        "earthquake": {
+            "arrivalTime": "2026/11/08 01:04:41",
+            "condition": "",
+            "hypocenter": {
+                "depth": 40,
+                "latitude": 34.9,
+                "longitude": 137.6,
+                "magnitude": 5.5,
+                "name": "愛知県東部",
+                "reduceName": "愛知県"
+            },
+            "originTime": "2026/11/08 01:04:35"
+        },
+        "id": "6aef4c21e88ee598246bf482",
+        "issue": {
+            "eventId": "20261108010441",
+            "serial": "1",
+            "time": "2026/11/08 01:04:49"
+        },
+        "time": "2026/11/08 01:04:49.608",
+        "timestamp": {
+            "convert": "2026/11/08 01:04:49.585",
+            "register": "2026/11/08 01:04:49.608"
+        },
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20231023"
+    }
+]
