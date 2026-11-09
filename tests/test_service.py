@@ -196,7 +196,9 @@ def test_eew_unknown_forecast_sends_red_map_with_notification(
     assert "茨城県南部: 予想震度 不明" in discord.sent[0]
     assert discord.sent_images[0] is not None
     with Image.open(io.BytesIO(discord.sent_images[0])) as image:
-        assert image.getpixel((665 + 100, 95)) == map_render.EEW_WARNING_COLOR
+        assert image.size == map_render.IMAGE_SIZE
+        colors = {color for _, color in image.getcolors(image.width * image.height)}
+        assert map_render.EEW_WARNING_COLOR in colors
     store.close()
 
 

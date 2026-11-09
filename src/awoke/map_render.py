@@ -25,10 +25,14 @@ SCALE_MARKERS = {
     10: "1", 20: "2", 30: "3", 40: "4", 45: "5-", 50: "5+",
     55: "6-", 60: "6+", 70: "7",
 }
-MAP_SIZE = (2200, 1500)
-PANEL_WIDTH = 650
+IMAGE_SIZE = (1920, 1080)
+PANEL_WIDTH = 480
+MAP_VIEWPORT_WIDTH = IMAGE_SIZE[0] - PANEL_WIDTH
+IMAGE_FOOTER_HEIGHT = 80
+MAP_SIZE = (MAP_VIEWPORT_WIDTH, IMAGE_SIZE[1] - IMAGE_FOOTER_HEIGHT)
 REGION_COLUMNS = 3
 LEGEND_HEIGHT = 240
+SIDEBAR_HEADER_HEIGHT = 100
 SEA_COLOR = (23, 30, 37)
 LAND_COLOR = (105, 111, 117)
 BOUNDARY_COLOR = (225, 230, 235)
@@ -92,12 +96,11 @@ class MapRenderer:
         groups = self._region_groups(selected, code)
         legend_height = LEGEND_HEIGHT if code == 551 else 0
         column_width = self._region_column_width(groups)
-        panel_width = max(PANEL_WIDTH, 65 + REGION_COLUMNS * 200)
-        list_width = max(panel_width, 65 + REGION_COLUMNS * column_width)
+        list_width = max(PANEL_WIDTH, 65 + REGION_COLUMNS * column_width)
         list_height = 140 + sum(
             48 * (1 + math.ceil(len(items) / REGION_COLUMNS)) for _, _, items in groups
         )
-        image = Image.new("RGB", (map_size[0] + panel_width, map_size[1] + 80), SEA_COLOR)
+        image = Image.new("RGB", IMAGE_SIZE, SEA_COLOR)
         map_image = Image.new("RGB", map_size, SEA_COLOR)
         draw = ImageDraw.Draw(map_image)
         self._draw_land(draw, visible_bounds, projection)
@@ -107,7 +110,6 @@ class MapRenderer:
         if code == 552:
             for shape, _, color, label in sorted(selected, key=lambda item: TSUNAMI_GRADE_PRIORITY[item[3]]):
                 _draw_boundary(draw, shape, projection, color, TSUNAMI_LINE_WIDTH)
-            self._draw_region_labels(draw, selected, projection)
         else:
             for shape, _, color, _ in selected:
                 _draw_shape(draw, shape, projection, color, outline=BOUNDARY_COLOR)
@@ -115,29 +117,37 @@ class MapRenderer:
         if lon is not None:
             px, py = projection(lon, lat)
             _draw_hypocenter(draw, px, py)
-        title = event.get("title", "地震情報")
-        if event.get("max_scale_text"):
-            title += f"  最大震度{event['max_scale_text']}"
-        draw.rectangle((0, 0, map_size[0], 75), fill=SEA_COLOR)
-        draw.text((40, 12), title, fill=BOUNDARY_COLOR, font=_font(46))
-        image.paste(map_image, (panel_width, 0))
+        map_left = _map_origin_x(map_size)
+        image.paste(map_image, (map_left, 0))
         draw = ImageDraw.Draw(image)
+        draw.text((20, 16), event.get("title", "地震情報"), fill=BOUNDARY_COLOR, font=_font(30))
+        region_top = SIDEBAR_HEADER_HEIGHT
+        if event.get("max_scale_text"):
+            draw.text(
+                (20, 56), f"最大震度 {event['max_scale_text']}",
+                fill=BOUNDARY_COLOR, font=_font(30),
+            )
         if legend_height:
-            self._draw_scale_legend(draw)
+            self._draw_scale_legend(draw, SIDEBAR_HEADER_HEIGHT)
+            region_top += legend_height
         list_image = Image.new("RGB", (list_width, list_height), SEA_COLOR)
         self._draw_region_list(ImageDraw.Draw(list_image), groups, code, 0, column_width)
-        available_height = max(1, map_size[1] - legend_height)
-        list_image.thumbnail((panel_width, available_height), Image.Resampling.LANCZOS)
-        image.paste(list_image, (0, legend_height))
+        available_height = max(1, IMAGE_SIZE[1] - region_top)
+        list_image.thumbnail((PANEL_WIDTH, available_height), Image.Resampling.LANCZOS)
+        image.paste(list_image, (0, region_top))
         footer_font = _font(24)
-        footer_y = image.height - 65
+        footer_x = map_left + 30
+        footer_y = IMAGE_SIZE[1] - 65
         draw.text(
-            (30, footer_y),
+            (footer_x, footer_y),
             "出典：気象庁 予報区等GISデータを加工して作成",
             fill=BOUNDARY_COLOR,
             font=footer_font,
         )
-        draw.text((30, footer_y + 30), "https://www.data.jma.go.jp/developer/gis.html", fill=BOUNDARY_COLOR, font=footer_font)
+        draw.text(
+            (footer_x, footer_y + 30), "https://www.data.jma.go.jp/developer/gis.html",
+            fill=BOUNDARY_COLOR, font=footer_font,
+        )
         output = io.BytesIO()
         image.save(output, format="PNG", optimize=True)
         return output.getvalue()
@@ -300,14 +310,17 @@ class MapRenderer:
             y += 48 * math.ceil(len(names) / REGION_COLUMNS)
 
     @staticmethod
-    def _draw_scale_legend(draw: ImageDraw.ImageDraw) -> None:
-        font = _font(28)
-        draw.rectangle((20, 20, PANEL_WIDTH - 20, LEGEND_HEIGHT - 20), fill=SEA_COLOR, outline=BOUNDARY_COLOR, width=2)
+    def _draw_scale_legend(draw: ImageDraw.ImageDraw, top: int = 0) -> None:
+        font = _font(23)
+        draw.rectangle(
+            (20, top + 4, PANEL_WIDTH - 20, top + LEGEND_HEIGHT - 4),
+            fill=SEA_COLOR, outline=BOUNDARY_COLOR, width=2,
+        )
         for index, (scale, color) in enumerate(SCALE_RGB.items()):
-            column, row = index % 3, index // 3
-            x, y = 36 + column * 195, 38 + row * 56
-            draw.rectangle((x, y + 4, x + 34, y + 36), fill=color, outline=(80, 80, 80))
-            draw.text((x + 44, y), SCALE_LABELS_TEXT[scale], fill=BOUNDARY_COLOR, font=font)
+            column, row = index % 2, index // 2
+            x, y = 34 + column * 210, top + 15 + row * 40
+            draw.rectangle((x, y + 2, x + 26, y + 28), fill=color, outline=(80, 80, 80))
+            draw.text((x + 34, y), SCALE_LABELS_TEXT[scale], fill=BOUNDARY_COLOR, font=font)
 
     def _draw_land(
         self,
@@ -387,7 +400,12 @@ def _map_layout(
     if projected_height <= 0:
         raise ValueError("Invalid Mercator map bounds")
     desired_width = math.ceil(40 + (height - 150) * (max_x - min_x) / projected_height)
-    return (min(width, max(1000, desired_width)), height), 100
+    minimum_width = round(width * 1000 / 2200)
+    return (min(width, max(minimum_width, desired_width)), height), 100
+
+
+def _map_origin_x(map_size: tuple[int, int]) -> int:
+    return PANEL_WIDTH + (MAP_VIEWPORT_WIDTH - map_size[0]) // 2
 
 
 class _Projection:

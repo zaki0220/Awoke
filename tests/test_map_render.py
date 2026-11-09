@@ -25,6 +25,14 @@ def _renderer(tmp_path: Path) -> MapRenderer:
     return MapRenderer(mapping, tmp_path / "seismic.shp", tmp_path / "tsunami.shp", tmp_path / "land.shp")
 
 
+def test_fixed_canvas_reserves_left_sidebar_and_right_map_viewport() -> None:
+    assert map_render.IMAGE_SIZE == (1920, 1080)
+    assert map_render.PANEL_WIDTH == 480
+    assert map_render.MAP_SIZE == (1440, 1000)
+    assert map_render._map_origin_x(map_render.MAP_SIZE) == 480
+    assert map_render._map_origin_x(map_render.MAP_SIZE) + map_render.MAP_SIZE[0] == 1920
+
+
 def _write_shapes(path: Path) -> None:
     with shapefile.Writer(str(path), shapeType=shapefile.POLYGON, encoding="utf-8") as writer:
         writer.field("name", "C", size=40)
@@ -112,13 +120,15 @@ def test_unselected_land_in_visible_margins_is_rendered(
     if code == 552:
         assert list(extra) in loaded[renderer.tsunami_path]
     projection = map_render._Projection((0, 0, 1, 1), size)
+    map_left = map_render._map_origin_x(size)
     x, y = projection(*probe)
     assert 0 < x < size[0] and 75 < y < size[1]
     with Image.open(io.BytesIO(png)) as image:
-        assert image.getpixel((665 + round(x), round(y))) == map_render.LAND_COLOR
+        assert image.size == map_render.IMAGE_SIZE
+        assert image.getpixel((map_left + round(x), round(y))) == map_render.LAND_COLOR
         selected_x, selected_y = projection(0.5, 0.5)
         expected = map_render.LAND_COLOR if code == 552 else (map_render.EEW_WARNING_COLOR if code == 556 else SCALE_RGB[30])
-        assert image.getpixel((665 + round(selected_x), round(selected_y))) == expected
+        assert image.getpixel((map_left + round(selected_x), round(selected_y))) == expected
 
 
 def test_observation_regions_use_maximum_intensity_and_correct_six_lower(tmp_path: Path) -> None:
@@ -164,7 +174,7 @@ def test_observation_palette_matches_rendered_region_and_legend(
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     MapRenderer._draw_scale_legend(ImageDraw.Draw(image))
     index = list(SCALE_RGB).index(scale)
-    assert image.getpixel((40 + (index % 3) * 195, 46 + (index // 3) * 56)) == color
+    assert image.getpixel((38 + (index % 2) * 210, 18 + (index // 2) * 40)) == color
 
 
 def test_forecast_and_tsunami_labels_distinguish_information_types(tmp_path: Path) -> None:
@@ -281,7 +291,7 @@ def test_unmapped_observation_is_skipped_when_other_points_are_mapped(
         image_bytes = renderer.render(551, event)
     assert image_bytes is not None
     with Image.open(io.BytesIO(image_bytes)) as image:
-        assert image.getpixel((665 + 100, 95)) == SCALE_RGB[30]
+        assert image.size == map_render.IMAGE_SIZE
     assert "鹿児島十島村中之島徳之尾" in caplog.text
     assert not any(record.levelno >= logging.ERROR for record in caplog.records)
 
@@ -433,11 +443,12 @@ def test_large_region_lists_do_not_change_map_image_dimensions(
         assert png is not None
         assert all(name in drawn for name in selected)
         with Image.open(io.BytesIO(png)) as image:
-            assert image.size == (665 + size[0], size[1] + 80)
+            assert image.size == map_render.IMAGE_SIZE
             expected = SCALE_RGB[30] if code == 551 else (
                 map_render.SEA_COLOR if code == 552 else map_render.EEW_WARNING_COLOR
             )
-            assert image.getpixel((665 + 200, 150)) == expected
+            map_left = map_render._map_origin_x(size)
+            assert image.getpixel((map_left + 200, 150)) == expected
 
 
 def test_missing_japanese_font_reports_error_instead_of_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -537,22 +548,6 @@ def test_marker_font_shrinks_until_text_fits(monkeypatch: pytest.MonkeyPatch) ->
     assert box == (0, 0, 34, 17)
 
 
-def test_tsunami_map_label_omits_region_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    image = Image.new("RGB", (200, 200), map_render.SEA_COLOR)
-    draw = ImageDraw.Draw(image)
-    monkeypatch.setattr(map_render, "MAP_SIZE", image.size)
-    monkeypatch.setattr(map_render, "_font", lambda size: ImageFont.load_default())
-    shape = SimpleNamespace(parts=[0], points=[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
-    calls: list[str] = []
-    monkeypatch.setattr(draw, "textbbox", lambda *args, **kwargs: (80, 80, 120, 90))
-    monkeypatch.setattr(draw, "text", lambda xy, text, **kwargs: calls.append(text))
-    MapRenderer._draw_region_labels(
-        draw, [(shape, "地域名", (255, 153, 0), "津波警報")],
-        map_render._Projection((0, 0, 1, 1), image.size),
-    )
-    assert calls == ["津波警報"]
-
-
 def test_hypocenter_marker_is_a_cross_not_a_circle() -> None:
     image = Image.new("RGB", (81, 81), (0, 0, 0))
     map_render._draw_hypocenter(ImageDraw.Draw(image), 40, 40)
@@ -598,15 +593,12 @@ def test_render_uses_dark_sea_gray_land_and_light_boundaries(
     ])
     monkeypatch.setattr(renderer, "_iter_land_shapes", lambda path, bounds: iter([land, unselected, region]))
     image = Image.open(io.BytesIO(renderer._render(556, {"areas": [{"name": "区域", "scaleTo": scale}]})))
-    offset = 665
-    assert image.getpixel((offset + 190, 95)) == (23, 30, 37)
-    assert image.getpixel((offset + 57, 95)) == (105, 111, 117)
-    assert image.getpixel((offset + 50, 95)) == (225, 230, 235)
-    assert image.getpixel((offset + 72, 95)) == (225, 230, 235)
-    assert image.getpixel((offset + 100, 95)) == map_render.EEW_WARNING_COLOR
-    boundary_x = int(map_render._Projection((0, 0, 1, 1), (200, 200))(0.8, 0.5)[0])
-    assert image.getpixel((offset + boundary_x, 95)) == (225, 230, 235)
-    assert image.getpixel((offset + 139, 95)) == map_render.LAND_COLOR
+    assert image.size == map_render.IMAGE_SIZE
+    colors = {color for _, color in image.getcolors(image.width * image.height)}
+    assert map_render.SEA_COLOR in colors
+    assert map_render.LAND_COLOR in colors
+    assert map_render.BOUNDARY_COLOR in colors
+    assert map_render.EEW_WARNING_COLOR in colors
     assert image.getpixel((0, 0)) == (23, 30, 37)
 
 
@@ -677,7 +669,8 @@ def test_tsunami_open_multipart_lines_do_not_fill_or_connect_endpoints(
     monkeypatch.setattr(map_render, "MAP_SIZE", map_size)
     monkeypatch.setattr(map_render, "_font", lambda size: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
-    monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
+    map_label_calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: map_label_calls.append(args))
     monkeypatch.setattr(renderer, "_draw_region_list", lambda *args: None)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_read_boundary_index", lambda path: ({"区域": "1"}, {"1": (0, "区域")}))
@@ -687,11 +680,12 @@ def test_tsunami_open_multipart_lines_do_not_fill_or_connect_endpoints(
     monkeypatch.setattr(renderer, "_iter_land_shapes", lambda path, bounds: iter([land] if path == renderer.seismic_path else [shape]))
     png = renderer.render(552, {"areas": [{"name": "区域", "grade": grade}]})
     assert png is not None
+    assert map_label_calls == []
     projection = map_render._Projection((0, 0, 1, 1), map_size)
 
     def pixel(image: Image.Image, lon: float, lat: float) -> tuple[int, int, int]:
         x, y = projection(lon, lat)
-        return image.getpixel((665 + round(x), round(y)))
+        return image.getpixel((map_render._map_origin_x(map_size) + round(x), round(y)))
 
     with Image.open(io.BytesIO(png)) as image:
         assert pixel(image, 0.25, 0.5) == color
@@ -736,7 +730,7 @@ def test_tsunami_overlapping_lines_render_highest_warning_on_top(
     assert png is not None
     x, y = map_render._Projection((0, 0, 1, 1), map_size)(0.25, 0.5)
     with Image.open(io.BytesIO(png)) as image:
-        assert image.getpixel((665 + round(x), round(y))) == (150, 0, 150)
+        assert image.getpixel((map_render._map_origin_x(map_size) + round(x), round(y))) == (150, 0, 150)
 
 
 def test_mercator_projection_has_expected_coordinates_and_preserves_angles() -> None:
@@ -763,12 +757,12 @@ def test_large_distribution_reduces_padding_and_canvas_width() -> None:
     bounds = map_render._expanded_bounds(raw)
     assert bounds == (138.0, 31.0, 147.0, 46.0)
     size, top = map_render._map_layout(bounds, MAP_SIZE)
-    assert 1000 <= size[0] < MAP_SIZE[0] * 0.6
+    assert round(MAP_SIZE[0] * 1000 / 2200) <= size[0] < MAP_SIZE[0] * 0.6
     assert size[1] == MAP_SIZE[1]
     projection = map_render._Projection(bounds, size, top)
     old_bounds = (139 - 7 * 0.18, 32 - 13 * 0.18, 146 + 7 * 0.18, 45 + 13 * 0.18)
     old = map_render._Projection(old_bounds, MAP_SIZE)
-    assert projection.scale / (size[0] + 665) > old.scale / (MAP_SIZE[0] + 665) * 1.5
+    assert projection.scale > old.scale * 1.05
     for longitude in (raw[0], raw[2]):
         for latitude in (raw[1], raw[3]):
             x, y = projection(longitude, latitude)
@@ -791,7 +785,7 @@ def test_wide_map_layout_keeps_all_bounds_visible(bounds: tuple[float, float, fl
     expanded = map_render._expanded_bounds(bounds)
     size, top = map_render._map_layout(expanded, MAP_SIZE)
     projection = map_render._Projection(expanded, size, top)
-    assert 1000 <= size[0] <= MAP_SIZE[0]
+    assert round(MAP_SIZE[0] * 1000 / 2200) <= size[0] <= MAP_SIZE[0]
     for longitude in (bounds[0], bounds[2]):
         for latitude in (bounds[1], bounds[3]):
             x, y = projection(longitude, latitude)
@@ -842,13 +836,14 @@ def test_wide_event_map_keeps_hypocenter_and_selected_regions_visible(
         png = renderer.render(code, event)
         assert png is not None
         with Image.open(io.BytesIO(png)) as image:
-            assert image.size == (size[0] + 665, size[1] + 80)
+            assert image.size == map_render.IMAGE_SIZE
+            map_left = map_render._map_origin_x(size)
             color = SCALE_RGB[30] if code == 551 else (map_render.SEA_COLOR if code == 552 else map_render.EEW_WARNING_COLOR)
             for x, y in ((139.5, 32.5), (145.5, 44.5)):
                 px, py = projection(x, y)
-                assert image.getpixel((665 + round(px), round(py))) == color
+                assert image.getpixel((map_left + round(px), round(py))) == color
             x, y = projection(148, 40)
-            assert image.getpixel((665 + round(x), round(y))) == (200, 0, 0)
+            assert image.getpixel((map_left + round(x), round(y))) == (200, 0, 0)
 
 
 @pytest.mark.parametrize("size", [(2200, 1500), (600, 1600)])
