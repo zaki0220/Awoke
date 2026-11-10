@@ -219,7 +219,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 - **日本語フォント**: Rocky Linux 9では`sudo dnf install --enablerepo=crb google-noto-sans-cjk-jp-fonts`を実行し、`/usr/share/fonts/google-noto-cjk/NotoSansCJKjp-Regular.otf`が読み取れることを確認する。`--enablerepo=crb`はこの実行時のみCRBを有効にする。パッケージが見つからない場合は、利用可能なリポジトリを管理者に確認する。フォント導入後はサービスを再起動する。
 - **データ保護**: SQLiteの運用データは最終更新から7日経過後に削除する。バックアップは作成しないため、ディスク障害などでは通知履歴やメッセージ対応情報を失う可能性がある。
 - 7日間の保存期限を過ぎて対応情報が削除された後に同じ情報の更新報が届いた場合は、新規投稿や既存メッセージの編集を行わず、期限切れ情報としてログにのみ記録する。
-- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.2.20.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
+- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.3.0b1.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
 - **Rocky Linux 9への初回配置**: ZIPを一時ディレクトリへ展開し、ZIP内の`pyproject.toml`を含むディレクトリの内容を`/opt/awoke/`へコピーする（`pyproject.toml`が`/opt/awoke/pyproject.toml`、地図データが`/opt/awoke/share/`となる配置）。ZIPのバージョン名を固定せず、展開後にファイルから配置元を特定する:
 
   ```sh
@@ -263,12 +263,12 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   sudo systemctl enable --now awoke.service
   sudo systemctl status awoke.service --no-pager
   ```
-- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.2.20`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
+- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.3.0b1`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
 
   ```sh
   release_tmp=$(mktemp -d /tmp/awoke-update.XXXXXX)
-  unzip -q /tmp/awoke-0.2.20.zip -d "$release_tmp"
-  release_dir="$release_tmp/awoke-0.2.20"
+  unzip -q /tmp/awoke-0.3.0b1.zip -d "$release_tmp"
+  release_dir="$release_tmp/awoke-0.3.0b1"
   ls -ld "$release_dir/pyproject.toml" "$release_dir/share" "$release_dir/systemd/awoke.service"
   ```
 
@@ -291,7 +291,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   tsunami_shapefile = "/opt/awoke/share/20240520_AreaTsunami_GIS/tsunami.shp"
   ```
 
-  表示されたバージョンが`0.2.20`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
+  表示されたバージョンが`0.3.0b1`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
 
   ```sh
   sudo -u Awoke test -r /opt/awoke/share/20240520_AreaForecastLocalE_GIS/seismic.shp
@@ -309,6 +309,39 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 - Discordへの一時的な送信失敗が明確な場合は再試行する。HTTP `429`ではDiscordが示す待機時間に従う。Webhook無効などの恒久的なエラーは連続送信せず、ログや監視で検知できるようにする。
 - Discordへの送信結果が不明な場合は重複通知を避けるため再試行せず、通知漏れの可能性を許容してログに記録する。
 - 長時間の切断や送信失敗は、可能ならDiscord以外の経路でも監視する。
+
+### Discord Webhook URLの変更
+
+1. Discordで変更先のWebhook URLを取得する。URLは秘密情報なので、チャット、Git、シェルのコマンド引数や履歴に記載しない。端末の画面共有・操作記録にも注意する。
+2. サービスを停止し、credentialファイルを編集する。停止中はリアルタイム受信できない。
+
+   ```sh
+   sudo systemctl stop awoke.service
+   sudoedit /etc/awoke/discord-webhook-url
+   ```
+
+3. エディタでファイルの内容を**新しいWebhook URLだけ**に置き換えて保存する。`https://discord.com/api/webhooks/`または`https://canary.discord.com/api/webhooks/`で始まるURLを使用する。`sudoedit`は編集用の一時ファイルを作成するため、信頼できる環境で実行し、エディタのバックアップや復元ファイルにもURLを残さないようにする。
+4. 所有者と権限を設定し、URLを表示せずに確認する。エラーが出た場合は先に進まない。
+
+   ```sh
+   sudo chown root:root /etc/awoke/discord-webhook-url
+   sudo chmod 0600 /etc/awoke/discord-webhook-url
+   sudo stat -c '%U:%G %a %n' /etc/awoke/discord-webhook-url
+   ```
+
+   `root:root 600`と表示されることを確認する。
+5. サービスを起動し、状態と起動後のログを確認する。変更したcredentialは起動時に読み直される。
+
+   ```sh
+   awoke_log_since=$(date '+%Y-%m-%d %H:%M:%S')
+   sudo systemctl start awoke.service
+   sudo systemctl status awoke.service --no-pager -n 0
+   sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
+   ```
+
+   `active (running)`を確認し、次の通知が変更先に届くことを確認する。起動成功だけではWebhookへの送信成功は保証されない。ログを共有する場合は秘密情報が含まれないことを確認する。
+
+別のWebhookに変更すると、以前のWebhookが作成したメッセージは新しいWebhookでは編集できない。続報の編集に失敗した場合、最新内容が新規投稿されることがあり、過去の津波投稿への「解除済」追記も失敗する可能性がある。停止中の情報は履歴から可能な範囲で照合するが、すべての復元は保証されない。テストモードでは履歴照合を行わない。
 
 ## 検証項目
 
