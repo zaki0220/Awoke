@@ -1,0 +1,12 @@
+[awoke]
+test_mode = false
+threshold = 40
+log_level = "INFO"
+database = "/var/lib/awoke/awoke.sqlite3"
+area_mapping = "/opt/awoke/share/area_mapping.csv"
+seismic_shapefile = "/opt/awoke/share/20240520_AreaForecastLocalE_GIS/seismic.shp"
+tsunami_shapefile = "/opt/awoke/share/20240520_AreaTsunami_GIS/tsunami.shp"
+event_match_radius_km = 100.0
+retention_days = 7
+reconnect_min_seconds = 2.0
+reconnect_max_seconds = 60.0

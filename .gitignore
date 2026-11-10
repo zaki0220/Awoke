@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local GIS shapefiles
+/20190125_AreaInformationPrefectureEarthquake_GIS/地震情報／都道府県等.shp
+/20240520_AreaForecastLocalE_GIS/地震情報／細分区域.shp
+/20240520_AreaTsunami_GIS/津波予報区.shp
+/20190125_AreaForecastEEW_GIS/緊急地震速報／地方予報区.shp
+/20190125_AreaForecastLocalEEW_GIS/緊急地震速報／府県予報区.shp

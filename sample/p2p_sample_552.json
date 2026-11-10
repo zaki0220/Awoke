@@ -1,0 +1,521 @@
+[
+    {
+        "areas": [],
+        "cancelled": true,
+        "code": 552,
+        "id": "6af07d21819a78200c1f1357",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/09 12:00:02",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 22:46:09.198",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "千葉県九十九里・外房"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "千葉県内房"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "伊豆諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "小笠原諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "高知県"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "宮崎県"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "鹿児島県東部"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "種子島・屋久島地方"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "奄美群島・トカラ列島"
+            }
+        ],
+        "cancelled": false,
+        "code": 552,
+        "id": "6af07d03819a78200c1f1356",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/09 08:24:34",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 22:45:39.144",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "千葉県九十九里・外房"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "千葉県内房"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "伊豆諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "小笠原諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "高知県"
+            }
+        ],
+        "cancelled": false,
+        "code": 552,
+        "id": "6af07cc7819a78200c1f1354",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/09 07:51:33",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 22:44:39.032",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "伊豆諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "小笠原諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "高知県"
+            }
+        ],
+        "cancelled": false,
+        "code": 552,
+        "id": "6af07ca8819a78200c1f1353",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/09 07:44:40",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 22:44:08.979",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "伊豆諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "小笠原諸島"
+            }
+        ],
+        "cancelled": false,
+        "code": 552,
+        "id": "6af07c8a819a78200c1f1352",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/09 07:26:51",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 22:43:38.926",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "伊豆諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "小笠原諸島"
+            }
+        ],
+        "cancelled": false,
+        "code": 552,
+        "id": "6af07c4e819a78200c1f1350",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/09 06:40:17",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 22:42:38.814",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [],
+        "cancelled": true,
+        "code": 552,
+        "id": "6af079f5819a78200c1f133c",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/05 13:15:04",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 22:32:37.822",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [
+            {
+                "firstHeight": {
+                    "arrivalTime": "2023/10/05 11:30:00"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "伊豆諸島"
+            }
+        ],
+        "cancelled": false,
+        "code": 552,
+        "id": "6af079b9819a78200c1f133a",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/05 11:06:33",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 22:31:37.743",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [],
+        "cancelled": true,
+        "code": 552,
+        "id": "6aefb14e819a78200c1f0c80",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/09 12:00:02",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 08:16:30.506",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    },
+    {
+        "areas": [
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "千葉県九十九里・外房"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "千葉県内房"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "伊豆諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "小笠原諸島"
+            },
+            {
+                "firstHeight": {
+                    "condition": "第１波の到達を確認"
+                },
+                "grade": "Watch",
+                "immediate": false,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "高知県"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "宮崎県"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "鹿児島県東部"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "種子島・屋久島地方"
+            },
+            {
+                "firstHeight": {
+                    "condition": "津波到達中と推測"
+                },
+                "grade": "Watch",
+                "immediate": true,
+                "maxHeight": {
+                    "description": "１ｍ",
+                    "value": 1
+                },
+                "name": "奄美群島・トカラ列島"
+            }
+        ],
+        "cancelled": false,
+        "code": 552,
+        "id": "6aefb130819a78200c1f0c7f",
+        "issue": {
+            "source": "気象庁",
+            "time": "2023/10/09 08:24:34",
+            "type": "Focus"
+        },
+        "time": "2026/11/08 08:16:00.466",
+        "user_agent": "jmaxml-seis-parser-go, relay, register-api",
+        "ver": "20220813"
+    }
+]
