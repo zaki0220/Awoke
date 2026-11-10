@@ -15,7 +15,7 @@ from typing import Any
 
 from awoke.config import Config, webhook_credential
 from awoke.discord import DiscordClient
-from awoke.map_render import MapRenderer
+from awoke.map_render import TSUNAMI_GRADES, MapRenderer
 from awoke.p2p import fetch_history, open_stream, stream_reader
 from awoke.store import Store
 
@@ -437,6 +437,42 @@ def _format_event_time(value: str) -> str:
     return parsed.strftime("%Y/%m/%d %H:%M") + "頃"
 
 
+def _eew_maximum_scale(areas: list[dict[str, Any]]) -> str:
+    labels = {0: "0", **SCALE_LABELS}
+    scales: list[int] = []
+    unbounded = False
+    unknown = False
+
+    def scale_code(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return int(value)
+
+    for area in areas:
+        upper = scale_code(area.get("scaleTo"))
+        if upper in labels:
+            scales.append(upper)
+        elif upper == 99:
+            lower = scale_code(area.get("scaleFrom"))
+            if lower in labels:
+                scales.append(lower)
+                unbounded = True
+            else:
+                unknown = True
+        else:
+            unknown = True
+    if not scales:
+        return "不明"
+    result = labels[max(scales)]
+    if unbounded:
+        result += "以上"
+    if unknown:
+        result += "（一部地域の予想震度は不明）"
+    return result
+
+
 def _format_message(code: int, state: dict[str, Any]) -> str:
     if code == 551:
         lines = ["**地震情報（観測）**"]
@@ -457,22 +493,31 @@ def _format_message(code: int, state: dict[str, Any]) -> str:
         if state.get("cancelled"):
             lines.append("津波警報・注意報が解除されました。")
         else:
+            grouped: dict[str, list[str]] = {}
             for area in state.get("areas", []):
-                bits = [area.get("name", "")]
-                if area.get("grade"):
-                    grade = {
-                        "Watch": "津波注意報",
-                        "Warning": "津波警報",
-                        "MajorWarning": "大津波警報",
-                    }.get(str(area["grade"]), str(area["grade"]))
-                    bits.append(grade)
+                grade = area.get("grade")
+                if grade in TSUNAMI_GRADES:
+                    label = TSUNAMI_GRADES[grade][0]
+                elif not grade or grade == "Unknown":
+                    label = "種別不明"
+                else:
+                    LOG.warning("Unknown tsunami grade in notification: grade=%s", grade)
+                    label = f"種別不明（{grade}）"
                 height = (area.get("maxHeight") or {}).get("description")
-                if height:
-                    bits.append(f"予想高さ {height}")
-                arrival = (area.get("firstHeight") or {}).get("condition")
-                if arrival:
-                    bits.append(str(arrival))
-                lines.append(" / ".join(bits))
+                first_height = area.get("firstHeight") or {}
+                arrival = " / ".join(
+                    str(value) for value in (first_height.get("arrivalTime"), first_height.get("condition"))
+                    if value
+                )
+                row = "\t".join((str(area.get("name") or "地域不明"), str(height or "不明"), arrival or "不明"))
+                grouped.setdefault(label, []).append(row)
+            for label, _, _ in sorted(TSUNAMI_GRADES.values(), key=lambda item: item[2], reverse=True):
+                if label in grouped:
+                    lines.append(f"【{label}】")
+                    lines.extend(grouped.pop(label))
+            for label, rows in grouped.items():
+                lines.append(f"【{label}】")
+                lines.extend(rows)
         return "\n".join(lines)
     issue = state.get("issue") or {}
     earthquake = state.get("earthquake") or {}
@@ -486,7 +531,5 @@ def _format_message(code: int, state: dict[str, Any]) -> str:
         lines.append(f"震源: {hypocenter['name']}")
     if hypocenter.get("magnitude") is not None and hypocenter.get("magnitude") >= 0:
         lines.append(f"マグニチュード: M{hypocenter['magnitude']}")
-    for area in state.get("areas", []):
-        scale = SCALE_LABELS.get(area.get("scaleTo"), "不明")
-        lines.append(f"{area.get('name', '')}: 予想震度 {scale}")
+    lines.append(f"予想最大震度: {_eew_maximum_scale(state.get('areas') or [])}")
     return "\n".join(lines)

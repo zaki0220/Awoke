@@ -31,7 +31,7 @@ MAP_VIEWPORT_WIDTH = IMAGE_SIZE[0] - PANEL_WIDTH
 IMAGE_FOOTER_HEIGHT = 80
 MAP_SIZE = (MAP_VIEWPORT_WIDTH, IMAGE_SIZE[1] - IMAGE_FOOTER_HEIGHT)
 REGION_COLUMNS = 3
-LEGEND_HEIGHT = 240
+LEGEND_HEIGHT = 160
 SIDEBAR_HEADER_HEIGHT = 100
 SEA_COLOR = (23, 30, 37)
 LAND_COLOR = (105, 111, 117)
@@ -311,16 +311,16 @@ class MapRenderer:
 
     @staticmethod
     def _draw_scale_legend(draw: ImageDraw.ImageDraw, top: int = 0) -> None:
-        font = _font(23)
+        font = _font(20)
         draw.rectangle(
             (20, top + 4, PANEL_WIDTH - 20, top + LEGEND_HEIGHT - 4),
             fill=SEA_COLOR, outline=BOUNDARY_COLOR, width=2,
         )
         for index, (scale, color) in enumerate(SCALE_RGB.items()):
-            column, row = index % 2, index // 2
-            x, y = 34 + column * 210, top + 15 + row * 40
-            draw.rectangle((x, y + 2, x + 26, y + 28), fill=color, outline=(80, 80, 80))
-            draw.text((x + 34, y), SCALE_LABELS_TEXT[scale], fill=BOUNDARY_COLOR, font=font)
+            column, row = index % 3, index // 3
+            x, y = 34 + column * 140, top + 15 + row * 45
+            draw.rectangle((x, y + 2, x + 24, y + 26), fill=color, outline=(80, 80, 80))
+            draw.text((x + 30, y), SCALE_LABELS_TEXT[scale], fill=BOUNDARY_COLOR, font=font)
 
     def _draw_land(
         self,

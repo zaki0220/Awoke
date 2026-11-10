@@ -169,6 +169,29 @@ def test_p2p556_serial_order_and_cancellation(tmp_path: Path) -> None:
     store.close()
 
 
+def test_eew_update_edits_maximum_and_cancellation_keeps_notice(tmp_path: Path) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    report = {
+        "code": 556, "id": "eew-update",
+        "issue": {"eventId": "event-update", "serial": 1},
+        "earthquake": {"hypocenter": {"name": "茨城県沖", "magnitude": 5.2}},
+        "areas": [{"name": "茨城県南部", "scaleTo": 40}],
+    }
+    asyncio.run(processor.process(report))
+    assert "予想最大震度: 4" in discord.sent[0]
+    update = dict(report, issue={"eventId": "event-update", "serial": 2},
+                  areas=[{"name": "栃木県南部", "scaleTo": 50}])
+    asyncio.run(processor.process(update))
+    assert "予想最大震度: 5強" in discord.edited[-1][1]
+    assert "栃木県南部" not in discord.edited[-1][1]
+    asyncio.run(processor.process(dict(update, issue={"eventId": "event-update", "serial": 3},
+                                       cancelled=True, areas=[])))
+    assert "取消報" in discord.edited[-1][1]
+    store.close()
+
+
 def test_eew_unknown_forecast_sends_red_map_with_notification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -193,13 +216,52 @@ def test_eew_unknown_forecast_sends_red_map_with_notification(
         "areas": [{"name": "茨城県南部", "scaleTo": -1}],
     }
     asyncio.run(processor.process(report))
-    assert "茨城県南部: 予想震度 不明" in discord.sent[0]
+    assert "予想最大震度: 不明" in discord.sent[0]
+    assert "茨城県南部" not in discord.sent[0]
     assert discord.sent_images[0] is not None
     with Image.open(io.BytesIO(discord.sent_images[0])) as image:
         assert image.size == map_render.IMAGE_SIZE
         colors = {color for _, color in image.getcolors(image.width * image.height)}
         assert map_render.EEW_WARNING_COLOR in colors
     store.close()
+
+
+@pytest.mark.parametrize("areas,expected", [
+    ([{"scaleTo": 40}, {"scaleTo": 45.0}, {"scaleTo": 30}], "5弱"),
+    ([{"scaleTo": 0.0}], "0"),
+    ([{"scaleTo": 99, "scaleFrom": 50}], "5強以上"),
+    ([{"scaleTo": 99, "scaleFrom": 45}, {"scaleTo": 55}], "6弱以上"),
+    ([{"scaleTo": 40}, {"scaleTo": -1}], "4（一部地域の予想震度は不明）"),
+    ([{"scaleTo": 40}, {"scaleTo": 99}], "4（一部地域の予想震度は不明）"),
+    ([{"scaleTo": 50}, {"scaleTo": float("inf")}, {"scaleTo": True}], "5強（一部地域の予想震度は不明）"),
+    ([{"scaleTo": -1}, {}], "不明"),
+    ([], "不明"),
+])
+def test_eew_message_maximum_forecast_and_unknown_values(
+    areas: list[dict[str, Any]], expected: str,
+) -> None:
+    state = {
+        "issue": {"eventId": "123", "serial": 2},
+        "earthquake": {"hypocenter": {"name": "震源地", "magnitude": 5.5}},
+        "areas": [{"name": f"発表地域{i}", **area} for i, area in enumerate(areas)],
+    }
+    message = _format_message(556, state)
+    assert "震源: 震源地" in message
+    assert "マグニチュード: M5.5" in message
+    assert f"予想最大震度: {expected}" in message
+    assert "発表地域" not in message
+
+
+def test_eew_sample_message_uses_maximum_forecast_not_region_list() -> None:
+    sample = Path(__file__).parents[1] / "sample" / "p2p_sample_556.json"
+    payload = json.loads(sample.read_text(encoding="utf-8-sig"))[0]
+    state = EventProcessor._apply(556, {}, payload)
+    message = _format_message(556, state)
+    assert "震源: 愛知県東部" in message
+    assert "マグニチュード: M5.5" in message
+    assert "予想最大震度: 5弱" in message
+    assert "愛知県西部" not in message
+    assert "静岡県西部" not in message
 
 
 def test_tsunami_same_report_update_edits_and_preserves_known_areas(tmp_path: Path) -> None:
@@ -214,14 +276,62 @@ def test_tsunami_same_report_update_edits_and_preserves_known_areas(tmp_path: Pa
         "areas": [{"name": "茨城県", "grade": "Warning"}],
     }
     asyncio.run(processor.process(base))
+    assert discord.sent == ["**津波情報**\n【津波警報】\n茨城県\t不明\t不明"]
+    revised = dict(base, areas=[{
+        "name": "茨城県", "grade": "Warning",
+        "maxHeight": {"description": "３ｍ"},
+        "firstHeight": {"arrivalTime": "2023/10/09 12:30:00"},
+    }])
+    asyncio.run(processor.process(revised))
+    assert discord.edited[-1] == (
+        "message-1", "**津波情報**\n【津波警報】\n茨城県\t３ｍ\t2023/10/09 12:30:00",
+    )
     update = dict(base, cancelled=True, areas=[])
     asyncio.run(processor.process(update))
     state = store.get_event("552:tsunami-1")["state"]
     assert state["cancelled"]
-    assert state["areas"] == base["areas"]
+    assert state["areas"] == revised["areas"]
     assert len(discord.sent) == 1
     assert "津波警報・注意報が解除されました" in discord.edited[-1][1]
     store.close()
+
+
+def test_tsunami_message_groups_areas_by_severity_and_keeps_arrival_details() -> None:
+    state = {"areas": [
+        {"name": "千葉県", "grade": "Watch", "maxHeight": {"description": "１ｍ"},
+         "firstHeight": {"condition": "津波到達中と推測"}},
+        {"name": "宮城県", "grade": "MajorWarning", "maxHeight": {"description": "巨大"},
+         "firstHeight": {"arrivalTime": "2023/10/09 12:30:00", "condition": "第１波の到達を確認"}},
+        {"name": "高知県", "grade": "Warning", "maxHeight": {"description": "３ｍ"},
+         "firstHeight": {"arrivalTime": "2023/10/09 13:00:00"}},
+        {"name": "岩手県", "grade": "MajorWarning", "maxHeight": {"description": "１０ｍ超"}},
+        {"name": "静岡県", "grade": "Watch"},
+    ]}
+    assert _format_message(552, state) == (
+        "**津波情報**\n"
+        "【大津波警報】\n"
+        "宮城県\t巨大\t2023/10/09 12:30:00 / 第１波の到達を確認\n"
+        "岩手県\t１０ｍ超\t不明\n"
+        "【津波警報】\n"
+        "高知県\t３ｍ\t2023/10/09 13:00:00\n"
+        "【津波注意報】\n"
+        "千葉県\t１ｍ\t津波到達中と推測\n"
+        "静岡県\t不明\t不明"
+    )
+
+
+def test_tsunami_message_preserves_unknown_grades(caplog: pytest.LogCaptureFixture) -> None:
+    state = {"areas": [
+        {"name": "区域A", "grade": "Unknown"},
+        {"name": "区域B", "grade": "Unexpected"},
+        {"name": "区域C"},
+    ]}
+    assert _format_message(552, state) == (
+        "**津波情報**\n"
+        "【種別不明】\n区域A\t不明\t不明\n区域C\t不明\t不明\n"
+        "【種別不明（Unexpected）】\n区域B\t不明\t不明"
+    )
+    assert "Unknown tsunami grade in notification: grade=Unexpected" in caplog.text
 
 
 def test_unknown_intensity_is_not_formatted_as_zero() -> None:

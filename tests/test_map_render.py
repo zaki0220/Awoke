@@ -174,7 +174,7 @@ def test_observation_palette_matches_rendered_region_and_legend(
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     MapRenderer._draw_scale_legend(ImageDraw.Draw(image))
     index = list(SCALE_RGB).index(scale)
-    assert image.getpixel((38 + (index % 2) * 210, 18 + (index // 2) * 40)) == color
+    assert image.getpixel((38 + (index % 3) * 140, 18 + (index // 3) * 45)) == color
 
 
 def test_forecast_and_tsunami_labels_distinguish_information_types(tmp_path: Path) -> None:
@@ -369,6 +369,16 @@ def test_legend_is_in_left_panel_above_region_list(monkeypatch: pytest.MonkeyPat
     assert texts[9][0][1] > max(y for (_, y), _ in texts[:9])
     assert texts[9][1] == "各地域内で観測された最大震度"
     assert {text for _, text in texts[:9]} == set(map_render.SCALE_LABELS_TEXT.values())
+    assert len({x for (x, _), _ in texts[:9]}) == 3
+    assert len({y for (_, y), _ in texts[:9]}) == 3
+    assert len({xy for xy, _ in texts[:9]}) == 9
+
+
+def test_legend_text_fits_each_cell_with_japanese_font() -> None:
+    font = map_render._font(20)
+    for label in map_render.SCALE_LABELS_TEXT.values():
+        left, _, right, _ = font.getbbox(label)
+        assert right - left <= 110
 
 
 def test_three_columns_keep_groups_order_and_fit_all_names(monkeypatch: pytest.MonkeyPatch) -> None:

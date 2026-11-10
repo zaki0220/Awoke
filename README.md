@@ -145,8 +145,10 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   - 発生時刻は分単位で「2023/05/11 18:52頃」のように表示する。地震の識別や保存には元の時刻を使用する。
   - 初報が設定値未満で未通知の場合でも、更新後に設定値以上になれば新規メッセージを送信する。通知後に設定値未満になった場合も既存メッセージを編集して訂正を反映する。
 - **津波情報（552）**: 津波注意報・津波警報・大津波警報を、震度の設定値に関係なく通知する。取得できる予報区、警報・注意報の種類、予想される高さ、到達予想時刻などを表示する。
+  - 本文は大津波警報・津波警報・津波注意報の順に区分し、地域ごとに「予報区名・予想高さ・到達予想時刻」をタブ区切りで表示する。到達状況がある場合も時刻と合わせて表示し、未取得の高さや時刻・状況は「不明」とする。種別不明の地域も省略しない。
   - 更新・解除を受信した場合は状態を反映する。解除は空の予報区一覧を使って判定せず、`cancelled`を確認する。
-- **緊急地震速報（556）**: 警報を震度の設定値に関係なく通知する。取得できる震源、予想震度、対象地域などを表示し、予測であることを明記する。
+- **緊急地震速報（556）**: 警報を震度の設定値に関係なく通知する。本文には取得できる震源、マグニチュード、予想最大震度を表示し、予測であることを明記する。発表地域の一覧は本文に含めず、地図画像の左側に表示する。
+  - 予想最大震度は受信した発表地域の`scaleTo`（予想震度の上限）の最大値とする。上限が「以上」の場合は`scaleFrom`（下限）を考慮して「以上」と表示し、上限が不明な地域が含まれる場合はその旨を付記する。すべて不明なら「不明」とする。
   - `issue.eventId`を地震単位のキー、`issue.serial`を報の順序として扱う仮仕様で実装する。同一`eventId`の続報は状態を更新して既存メッセージを編集し、古いserialは状態に反映しない。取消は`cancelled`を確認して反映する。フィールド欠落や矛盾がある場合は誤結合せずログに記録する。この仮仕様は実データで検証して調整する。
 
 ### 共通の扱い
@@ -178,7 +180,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 - 対応表を更新する場合は、`python tools/update_area_mapping.py data/area_mapping.json data/area_mapping.csv <細分区域のshpファイル>`を実行する。既存の地点と矛盾する場合や区域コード・名称がGISと一致しない場合は更新を中止する。リリースには実行時に必要なCSVを含める。
 - 地図には地域単位の値を表示する場合「各地域内で観測された最大震度」と明記する。震度情報がない地域は震度0とみなさず、未着色またはデータなしとして表示する。
 - 地図上に地域名は表示しない。地震情報と緊急地震速報では対象地域内に震度配色の縁付き正方形を配置し、震度を`1`〜`4`、`5-`、`5+`、`6-`、`6+`、`7`で表示する。予想震度が不明な地域には記号を表示しない。記号が重なる場合は震度の高い地域を優先し、表示できない区域も左側の一覧には掲載する。赤い×は震源を表す。地震情報の震度の配色凡例は左側の一覧の上に表示し、地図には重ねない。緊急地震速報の地域は警報色で塗るため震度別の塗り分け凡例を表示しない。一覧は震度ごとにまとめて高い順に並べ、各グループ内を3列に配置する。地域が多い場合や地域名が長い場合は一覧だけを縮小して左側480ピクセルに収め、画像全体の寸法と地図領域を維持する。津波予報区の地図上には警報・注意報の文字を表示せず、種類は左側の一覧で示す。日本語フォントがない場合は文字化けした画像を送信せず、ログにエラーを記録してテキストのみ通知する。
-- 地震情報の震度の塗り分けには、次のRGB値を使う。凡例を付け、色だけに頼らず震度の文字も表示する。
+- 地震情報の震度の塗り分けには、次のRGB値を使う。凡例は3列×3行で表示し、色だけに頼らず震度の文字も表示する。
 
   | 震度 | RGB | HEX |
   |---|---|---|
@@ -212,7 +214,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 - **日本語フォント**: Rocky Linux 9では`sudo dnf install --enablerepo=crb google-noto-sans-cjk-jp-fonts`を実行し、`/usr/share/fonts/google-noto-cjk/NotoSansCJKjp-Regular.otf`が読み取れることを確認する。`--enablerepo=crb`はこの実行時のみCRBを有効にする。パッケージが見つからない場合は、利用可能なリポジトリを管理者に確認する。フォント導入後はサービスを再起動する。
 - **データ保護**: SQLiteの運用データは最終更新から7日経過後に削除する。バックアップは作成しないため、ディスク障害などでは通知履歴やメッセージ対応情報を失う可能性がある。
 - 7日間の保存期限を過ぎて対応情報が削除された後に同じ情報の更新報が届いた場合は、新規投稿や既存メッセージの編集を行わず、期限切れ情報としてログにのみ記録する。
-- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.2.17.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
+- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.2.19.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
 - **Rocky Linux 9への初回配置**: ZIPを一時ディレクトリへ展開し、ZIP内の`pyproject.toml`を含むディレクトリの内容を`/opt/awoke/`へコピーする（`pyproject.toml`が`/opt/awoke/pyproject.toml`、地図データが`/opt/awoke/share/`となる配置）。ZIPのバージョン名を固定せず、展開後にファイルから配置元を特定する:
 
   ```sh
@@ -256,12 +258,12 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   sudo systemctl enable --now awoke.service
   sudo systemctl status awoke.service --no-pager
   ```
-- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.2.17`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
+- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.2.19`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
 
   ```sh
   release_tmp=$(mktemp -d /tmp/awoke-update.XXXXXX)
-  unzip -q /tmp/awoke-0.2.17.zip -d "$release_tmp"
-  release_dir="$release_tmp/awoke-0.2.17"
+  unzip -q /tmp/awoke-0.2.19.zip -d "$release_tmp"
+  release_dir="$release_tmp/awoke-0.2.19"
   ls -ld "$release_dir/pyproject.toml" "$release_dir/share" "$release_dir/systemd/awoke.service"
   ```
 
@@ -284,7 +286,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   tsunami_shapefile = "/opt/awoke/share/20240520_AreaTsunami_GIS/tsunami.shp"
   ```
 
-  表示されたバージョンが`0.2.17`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
+  表示されたバージョンが`0.2.19`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
 
   ```sh
   sudo -u Awoke test -r /opt/awoke/share/20240520_AreaForecastLocalE_GIS/seismic.shp
