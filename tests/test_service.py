@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ class FakeDiscord:
         self.sent: list[str] = []
         self.sent_images: list[bytes | None] = []
         self.edited: list[tuple[str, str]] = []
+        self.content_edits: list[tuple[str, str]] = []
 
     async def send(self, content: str, image: bytes | None = None) -> str:
         self.sent.append(content)
@@ -33,6 +35,9 @@ class FakeDiscord:
 
     async def edit(self, message_id: str, content: str, image: bytes | None = None) -> None:
         self.edited.append((message_id, content))
+
+    async def edit_content(self, message_id: str, content: str) -> None:
+        self.content_edits.append((message_id, content))
 
 
 class FakeRenderer:
@@ -264,35 +269,162 @@ def test_eew_sample_message_uses_maximum_forecast_not_region_list() -> None:
     assert "静岡県西部" not in message
 
 
-def test_tsunami_same_report_update_edits_and_preserves_known_areas(tmp_path: Path) -> None:
+def _tsunami(report_id: str, minute: int, areas: list[dict[str, Any]], cancelled: bool = False) -> dict[str, Any]:
+    return {
+        "code": 552, "id": report_id, "cancelled": cancelled,
+        "issue": {"type": "Focus", "source": "気象庁", "time": f"2026/11/10 12:{minute:02d}:00"},
+        "areas": areas,
+    }
+
+
+def test_tsunami_direct_cancellation_preserves_peak_and_starts_new_cycle(tmp_path: Path) -> None:
     import asyncio
 
     processor, store, discord = _processor(tmp_path)
-    base = {
-        "code": 552,
-        "id": "tsunami-1",
-        "cancelled": False,
-        "issue": {"type": "Focus"},
-        "areas": [{"name": "茨城県", "grade": "Warning"}],
-    }
+    processor.config = replace(processor.config, test_mode=True)
+    base = _tsunami("one", 0, [{"name": "茨城県", "grade": "Watch"}])
     asyncio.run(processor.process(base))
-    assert discord.sent == ["**津波情報**\n【津波警報】\n茨城県\t不明\t不明"]
-    revised = dict(base, areas=[{
-        "name": "茨城県", "grade": "Warning",
-        "maxHeight": {"description": "３ｍ"},
-        "firstHeight": {"arrivalTime": "2023/10/09 12:30:00"},
-    }])
-    asyncio.run(processor.process(revised))
-    assert discord.edited[-1] == (
-        "message-1", "**津波情報**\n【津波警報】\n茨城県\t３ｍ\t2023/10/09 12:30:00",
-    )
-    update = dict(base, cancelled=True, areas=[])
-    asyncio.run(processor.process(update))
-    state = store.get_event("552:tsunami-1")["state"]
-    assert state["cancelled"]
-    assert state["areas"] == revised["areas"]
+    asyncio.run(processor.process(_tsunami("two", 1, [{"name": "茨城県", "grade": "Warning"}])))
+    asyncio.run(processor.process(_tsunami("cancel", 2, [], True)))
+    assert len(discord.sent) == 2
+    assert discord.edited[0][0] == "message-1"
+    assert "津波警報" in discord.content_edits[0][1]
+    assert "津波情報（解除済）" in discord.content_edits[0][1]
+    assert discord.content_edits[0][0] == "message-1"
+    assert "解除されました" in discord.sent[1]
+    asyncio.run(processor.process(_tsunami("old", 1, base["areas"])))
+    assert len(discord.sent) == 2
+    asyncio.run(processor.process(_tsunami("new", 3, base["areas"])))
+    assert len(discord.sent) == 3
+    store.close()
+
+
+def test_tsunami_shrink_and_downgrade_archive_all_peaks_across_restart(tmp_path: Path) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    processor.config = replace(processor.config, test_mode=True)
+    area = lambda name, grade: {"name": name, "grade": grade}
+    reports = [
+        _tsunami("a", 0, [area("A", "Warning"), area("B", "Watch")]),
+        _tsunami("b", 1, [area("A", "MajorWarning"), area("B", "Watch")]),
+        _tsunami("c", 2, [area("A", "Warning"), area("C", "Watch")]),
+        _tsunami("d", 3, [area("A", "Watch"), area("C", "Watch")]),
+        _tsunami("e", 4, [], True),
+    ]
+    for report in reports[:3]:
+        asyncio.run(processor.process(report))
+    store.close()
+    store = Store(tmp_path / "state.sqlite3")
+    processor = EventProcessor(processor.config, store, discord, FakeRenderer())
+    for report in reports[3:]:
+        asyncio.run(processor.process(report))
+    assert len(discord.sent) == 3
+    assert [item[0] for item in discord.edited] == ["message-1", "message-3"]
+    assert [item[0] for item in discord.content_edits] == ["message-1", "message-2"]
+    assert all("（解除済）" in content for _, content in discord.content_edits)
+    assert "解除されました" in discord.edited[-1][1]
+    state = store.get_event("552:timeline")["state"]
+    assert state["cancelled"] and state["snapshot"]["areas"] == []
+    assert all(item["marked"] for item in state["archives"])
+    store.close()
+
+
+def test_tsunami_order_duplicates_and_conflicts(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    processor.config = replace(processor.config, test_mode=True)
+    report = _tsunami("a", 1, [{"name": "A", "grade": "Watch"}])
+    asyncio.run(processor.process(report))
+    asyncio.run(processor.process(dict(report, id="duplicate", time="later")))
+    asyncio.run(processor.process(_tsunami("conflict", 1, [{"name": "B", "grade": "Warning"}])))
+    asyncio.run(processor.process(_tsunami("old", 0, [], True)))
+    asyncio.run(processor.process(_tsunami("missing", 2, [])))
+    asyncio.run(processor.process({**report, "id": "invalid", "issue": {}}))
     assert len(discord.sent) == 1
-    assert "津波警報・注意報が解除されました" in discord.edited[-1][1]
+    assert not discord.edited
+    assert "Conflicting tsunami reports" in caplog.text
+    assert "invalid issue.time" in caplog.text
+    assert store.get_event("552:timeline")["state"]["snapshot"]["areas"] == report["areas"]
+    store.close()
+
+
+def test_tsunami_sample_replayed_after_cancellation_does_not_reopen(tmp_path: Path) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    processor.config = replace(processor.config, test_mode=True)
+    sample_path = Path(__file__).parents[1] / "sample" / "p2p_sample_552.json"
+    reports = json.loads(sample_path.read_text(encoding="utf-8-sig"))
+    reports = [report for report in reports if report["issue"]["time"].startswith("2023/10/09")]
+    reports.sort(key=lambda report: report["issue"]["time"])
+    for report in reports:
+        asyncio.run(processor.process(report))
+    assert len(discord.sent) == 2
+    assert len(discord.edited) == 4
+    assert len(discord.content_edits) == 1
+    assert store.get_event("552:timeline")["state"]["cancelled"]
+    sent_count = len(discord.sent)
+    for report in reports:
+        asyncio.run(processor.process(report))
+    assert len(discord.sent) == sent_count
+    assert len(discord.edited) == 4
+    store.close()
+
+
+def test_tsunami_failed_archive_mark_is_retried_after_next_cycle(tmp_path: Path) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    processor.config = replace(processor.config, test_mode=True)
+    original = discord.edit_content
+
+    async def failure(message_id: str, content: str) -> None:
+        raise RuntimeError("offline")
+
+    discord.edit_content = failure
+    asyncio.run(processor.process(_tsunami("a", 0, [{"name": "A", "grade": "Watch"}])))
+    asyncio.run(processor.process(_tsunami("b", 1, [], True)))
+    asyncio.run(processor.process(_tsunami("c", 2, [{"name": "B", "grade": "Watch"}])))
+    discord.edit_content = original
+    asyncio.run(processor.process(_tsunami("d", 3, [{"name": "B", "grade": "Warning"}])))
+    assert discord.content_edits[0][0] == "message-1"
+    assert "（解除済）" in discord.content_edits[0][1]
+    store.close()
+
+
+def test_tsunami_failed_edit_keeps_old_post_for_cancellation_mark(tmp_path: Path) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    processor.config = replace(processor.config, test_mode=True)
+
+    async def failure(message_id: str, content: str, image: bytes | None = None) -> None:
+        raise RuntimeError("offline")
+
+    discord.edit = failure
+    asyncio.run(processor.process(_tsunami("a", 0, [{"name": "A", "grade": "Watch"}])))
+    asyncio.run(processor.process(_tsunami("b", 1, [{"name": "A", "grade": "Warning"}])))
+    asyncio.run(processor.process(_tsunami("c", 2, [], True)))
+    assert len(discord.sent) == 3
+    assert [item[0] for item in discord.content_edits] == ["message-1", "message-2"]
+    store.close()
+
+
+def test_tsunami_silent_baseline_and_later_update(tmp_path: Path) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    processor.config = replace(processor.config, test_mode=True)
+    first = _tsunami("a", 0, [{"name": "A", "grade": "Watch"}])
+    asyncio.run(processor.process(first, notify=False))
+    assert not discord.sent
+    asyncio.run(processor.process(_tsunami("b", 1, [{"name": "A", "grade": "Warning"}])))
+    assert len(discord.sent) == 1
+    asyncio.run(processor.process(_tsunami("c", 2, [], True)))
+    assert len(discord.sent) == 2
+    assert discord.content_edits[0][0] == "message-1"
     store.close()
 
 

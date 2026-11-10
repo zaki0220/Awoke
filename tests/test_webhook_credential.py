@@ -119,3 +119,28 @@ def test_edit_removes_old_attachments(monkeypatch: pytest.MonkeyPatch, image: by
     else:
         assert b'"attachments": []' in body
         assert b'filename="map.png"' in body
+
+
+def test_content_only_edit_preserves_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    requests: list[urllib.request.Request] = []
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def open_request(request: urllib.request.Request, timeout: int) -> Response:
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr("awoke.discord.urllib.request.urlopen", open_request)
+    client = DiscordClient("https://discord.com/api/webhooks/123456/fake-token")
+    asyncio.run(client.edit_content("987654", "updated"))
+    assert json.loads(requests[0].data) == {"content": "updated"}

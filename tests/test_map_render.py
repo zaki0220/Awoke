@@ -33,6 +33,45 @@ def test_fixed_canvas_reserves_left_sidebar_and_right_map_viewport() -> None:
     assert map_render._map_origin_x(map_render.MAP_SIZE) + map_render.MAP_SIZE[0] == 1920
 
 
+def test_tsunami_cancellation_renders_uncolored_japan_map_and_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = _renderer(tmp_path)
+    for path in (renderer.seismic_path, renderer.tsunami_path):
+        _write_shapes(path)
+    text: list[str] = []
+    boundary_colors: list[tuple[int, int, int]] = []
+    original_boundary = map_render._draw_boundary
+    bounds = []
+    original_layout = map_render._map_layout
+
+    def draw_boundary(*args: Any) -> None:
+        if len(args) > 3:
+            boundary_colors.append(args[3])
+        original_boundary(*args)
+
+    def layout(box: Any, size: Any) -> Any:
+        bounds.append(box)
+        return original_layout(box, size)
+
+    monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda self, xy, value, **kw: text.append(value))
+    monkeypatch.setattr(map_render, "_draw_boundary", draw_boundary)
+    monkeypatch.setattr(map_render, "_map_layout", layout)
+    png = renderer.render(552, {
+        "title": "津波情報", "cancelled": True,
+        "areas": [{"name": "区域A", "grade": "MajorWarning"}],
+    })
+    assert png is not None
+    with Image.open(io.BytesIO(png)) as image:
+        assert image.size == (1920, 1080)
+    assert "津波警報・注意報は" in text
+    assert "すべて解除されました" in text
+    assert not boundary_colors
+    west, south, east, north = bounds[0]
+    assert west <= 128 and south <= 30 and east >= 146 and north >= 46
+
+
 def _write_shapes(path: Path) -> None:
     with shapefile.Writer(str(path), shapeType=shapefile.POLYGON, encoding="utf-8") as writer:
         writer.field("name", "C", size=40)

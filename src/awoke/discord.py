@@ -30,9 +30,17 @@ class DiscordClient:
         url = self.webhook_url.split("?wait=true")[0].split("&wait=true")[0] + f"/messages/{message_id}"
         await self._with_rate_limit("PATCH", url, content, image)
 
-    async def _with_rate_limit(self, method: str, url: str, content: str, image: bytes | None) -> str | None:
+    async def edit_content(self, message_id: str, content: str) -> None:
+        url = self.webhook_url.split("?wait=true")[0].split("&wait=true")[0] + f"/messages/{message_id}"
+        await self._with_rate_limit("PATCH", url, content, None, preserve_attachments=True)
+
+    async def _with_rate_limit(
+        self, method: str, url: str, content: str, image: bytes | None, preserve_attachments: bool = False,
+    ) -> str | None:
         for attempt in range(5):
             try:
+                if preserve_attachments:
+                    return await asyncio.to_thread(self._request, method, url, content, image, True)
                 return await asyncio.to_thread(self._request, method, url, content, image)
             except DiscordRateLimit as error:
                 if attempt == 4:
@@ -40,9 +48,11 @@ class DiscordClient:
                 await asyncio.sleep(error.retry_after)
         raise RuntimeError("Discord request retry loop exited unexpectedly")
 
-    def _request(self, method: str, url: str, content: str, image: bytes | None) -> str | None:
+    def _request(
+        self, method: str, url: str, content: str, image: bytes | None, preserve_attachments: bool = False,
+    ) -> str | None:
         payload: dict[str, Any] = {"content": content}
-        if method == "PATCH":
+        if method == "PATCH" and not preserve_attachments:
             payload["attachments"] = []
         if image is None:
             body = json.dumps(payload).encode("utf-8")

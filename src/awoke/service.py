@@ -47,6 +47,9 @@ class EventProcessor:
         if not self.config.test_mode and _is_expired_report(code, payload, self.config.retention_days):
             LOG.info("Ignoring report older than retention window: code=%s id=%s", code, report_id)
             return
+        if code == 552:
+            await self._process_tsunami(payload, report_id, notify)
+            return
         if self.store.report_seen(code, report_id):
             event_key = self.store.report_event_key(code, report_id)
             if event_key is None:
@@ -92,6 +95,136 @@ class EventProcessor:
         self.store.save_event(event_key, code, _event_time(code, payload), state, message_id, serial)
         self.store.mark_report(code, report_id, payload, event_key)
         await self._publish(code, event_key, state, message_id, notify)
+
+    async def _process_tsunami(self, payload: dict[str, Any], report_id: str, notify: bool) -> None:
+        event_key = "552:timeline"
+        issue = payload.get("issue")
+        issue_time = issue.get("time") if isinstance(issue, dict) else None
+        try:
+            if not isinstance(issue_time, str):
+                raise ValueError("missing issue.time")
+            parsed_time = datetime.strptime(issue_time, "%Y/%m/%d %H:%M:%S")
+            if parsed_time.strftime("%Y/%m/%d %H:%M:%S") != issue_time:
+                raise ValueError("noncanonical issue.time")
+        except ValueError:
+            LOG.warning("Ignoring tsunami report with invalid issue.time: id=%s", report_id)
+            return
+        cancelled = payload.get("cancelled")
+        areas = payload.get("areas")
+        if not isinstance(cancelled, bool) or not isinstance(areas, list) or (not cancelled and not areas):
+            LOG.warning("Ignoring tsunami report with invalid cancellation or areas: id=%s", report_id)
+            return
+        if cancelled and areas:
+            LOG.warning("Ignoring tsunami cancellation with nonempty areas: id=%s", report_id)
+            return
+        if any(not isinstance(area, dict) or not isinstance(area.get("name"), str) or not area["name"]
+               for area in areas):
+            LOG.warning("Ignoring tsunami report with invalid area names: id=%s", report_id)
+            return
+        if len({area["name"] for area in areas}) != len(areas):
+            LOG.warning("Ignoring tsunami report with duplicate area names: id=%s", report_id)
+            return
+
+        current = self.store.get_event(event_key)
+        timeline = current["state"] if current else {}
+        await self._mark_tsunami_archives(event_key, timeline)
+        snapshot = {
+            "cancelled": cancelled,
+            "areas": sorted(areas, key=lambda area: area["name"]),
+            "source": issue.get("source"),
+            "type": issue.get("type"),
+        }
+        latest_time = timeline.get("issue_time")
+        if latest_time and issue_time <= latest_time:
+            if issue_time == latest_time and snapshot != timeline.get("snapshot"):
+                LOG.warning("Conflicting tsunami reports at issue.time=%s id=%s; ignoring", issue_time, report_id)
+            else:
+                LOG.info("Ignoring duplicate or older tsunami report: issue.time=%s id=%s", issue_time, report_id)
+            self.store.mark_report(552, report_id, payload, event_key)
+            return
+
+        was_active = bool(timeline) and not timeline.get("cancelled")
+        previous = timeline.get("current") if was_active else None
+        archives = timeline.get("archives", []) if was_active else []
+        pending = timeline.get("pending_marks", [])
+        if timeline.get("cancelled"):
+            pending = pending + [archive for archive in timeline.get("archives", []) if not archive.get("marked")]
+        split = bool(timeline.get("split")) if was_active else False
+        decrease = was_active and not cancelled and _tsunami_decreased(
+            timeline["snapshot"]["areas"], snapshot["areas"]
+        )
+        new_post = not was_active or decrease or (cancelled and not split)
+        if new_post and previous and previous.get("message_id"):
+            archives.append({
+                "message_id": previous["message_id"],
+                "content": previous["content"],
+                "marked": False,
+            })
+        if decrease:
+            split = True
+        state = self._apply(552, {}, payload)
+        state["issue_time"] = issue_time
+        content, image = self._notification(552, state)
+        message_id = None if new_post else (previous or {}).get("message_id")
+        timeline = {
+            "issue_time": issue_time, "snapshot": snapshot, "cancelled": cancelled,
+            "split": split, "archives": archives, "pending_marks": pending,
+            "current": {"message_id": message_id, "content": content},
+        }
+        self.store.save_event(event_key, 552, issue_time, timeline, None)
+        self.store.mark_report(552, report_id, payload, event_key)
+        if message_id:
+            try:
+                await self.discord.edit(message_id, content, image)
+            except Exception:
+                LOG.exception("Discord tsunami edit failed; posting replacement event=%s", event_key)
+                if notify:
+                    archives.append({
+                        "message_id": message_id,
+                        "content": previous["content"],
+                        "marked": False,
+                    })
+                    timeline["current"]["message_id"] = None
+                    self.store.save_event(event_key, 552, issue_time, timeline, None)
+                    await self._send_tsunami(event_key, timeline, content, image)
+        elif notify:
+            await self._send_tsunami(event_key, timeline, content, image)
+        if cancelled:
+            await self._mark_tsunami_archives(event_key, timeline)
+
+    async def _send_tsunami(
+        self, event_key: str, timeline: dict[str, Any], content: str, image: bytes | None,
+    ) -> None:
+        try:
+            message_id = await self.discord.send(content, image)
+        except Exception:
+            LOG.exception("Discord tsunami send failed; not retrying ambiguous outcome event=%s", event_key)
+            return
+        if not message_id:
+            LOG.error("Discord tsunami send returned no message ID event=%s", event_key)
+            return
+        timeline["current"]["message_id"] = message_id
+        self.store.save_event(event_key, 552, timeline["issue_time"], timeline, None)
+
+    async def _mark_tsunami_archives(self, event_key: str, timeline: dict[str, Any]) -> None:
+        archives = list(timeline.get("pending_marks", []))
+        if timeline.get("cancelled"):
+            archives.extend(timeline.get("archives", []))
+        for archive in archives:
+            if archive.get("marked"):
+                continue
+            content = archive["content"].replace("**津波情報**", "**津波情報（解除済）**", 1)
+            try:
+                await self.discord.edit_content(archive["message_id"], content)
+            except Exception:
+                LOG.exception("Discord tsunami archive marking failed: message=%s", archive["message_id"])
+                continue
+            archive["marked"] = True
+            self.store.save_event(event_key, 552, timeline["issue_time"], timeline, None)
+        pending = timeline.get("pending_marks", [])
+        if any(archive.get("marked") for archive in pending):
+            timeline["pending_marks"] = [archive for archive in pending if not archive.get("marked")]
+            self.store.save_event(event_key, 552, timeline["issue_time"], timeline, None)
 
     def _match_551(self, payload: dict[str, Any]) -> str:
         event_time = _event_time(551, payload)
@@ -154,7 +287,7 @@ class EventProcessor:
             state["title"] = "地震情報"
         elif code == 552:
             areas = payload.get("areas")
-            if isinstance(areas, list) and areas:
+            if isinstance(areas, list):
                 state["areas"] = areas
             issue = payload.get("issue") or {}
             if issue.get("type"):
@@ -424,6 +557,21 @@ def _is_older_serial(payload: dict[str, Any], current_serial: int | None) -> boo
     return serial is not None and current_serial is not None and serial < current_serial
 
 
+def _tsunami_decreased(previous: list[dict[str, Any]], current: list[dict[str, Any]]) -> bool:
+    old = {area["name"]: area.get("grade") for area in previous}
+    new = {area["name"]: area.get("grade") for area in current}
+    if old.keys() - new.keys():
+        return True
+    for name in old.keys() & new.keys():
+        old_grade, new_grade = old[name], new[name]
+        if old_grade not in TSUNAMI_GRADES or new_grade not in TSUNAMI_GRADES:
+            LOG.warning("Cannot compare tsunami grades: area=%s previous=%s current=%s", name, old_grade, new_grade)
+            continue
+        if TSUNAMI_GRADES[new_grade][2] < TSUNAMI_GRADES[old_grade][2]:
+            return True
+    return False
+
+
 def _valid_measure(value: Any, invalid: int) -> Any:
     return value if value is not None and value != invalid else None
 
@@ -490,6 +638,8 @@ def _format_message(code: int, state: dict[str, Any]) -> str:
         return "\n".join(lines)
     if code == 552:
         lines = ["**津波情報**"]
+        if state.get("issue_time"):
+            lines.append(f"発表時刻: {state['issue_time']}")
         if state.get("cancelled"):
             lines.append("津波警報・注意報が解除されました。")
         else:

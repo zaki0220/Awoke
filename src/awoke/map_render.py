@@ -45,6 +45,7 @@ TSUNAMI_GRADES = {
 TSUNAMI_LINE_WIDTH = 6
 TSUNAMI_GRADE_PRIORITY = {label: priority for label, _, priority in TSUNAMI_GRADES.values()}
 MERCATOR_MAX_LATITUDE = 85.0511287798066
+TSUNAMI_CANCELLATION_BOUNDS = (128.0, 30.0, 146.0, 46.0)
 
 
 class MapRenderer:
@@ -63,13 +64,14 @@ class MapRenderer:
 
     def _render(self, code: int, event: dict[str, Any]) -> bytes | None:
         boundary_path = self.tsunami_path if code == 552 else self.seismic_path
+        cancelled = code == 552 and event.get("cancelled")
         by_name, by_code = self._read_boundary_index(boundary_path)
-        regions = self._regions(code, event, by_name)
+        regions = {} if cancelled else self._regions(code, event, by_name)
         selected_indices = [
             (by_code[key][0], by_code[key][1], color, label)
             for key, (color, label) in regions.items() if key in by_code
         ]
-        if not selected_indices:
+        if not selected_indices and not cancelled:
             if code == 551 and not regions and any(
                 not point.get("isArea")
                 and isinstance(point.get("scale"), int)
@@ -80,10 +82,13 @@ class MapRenderer:
                 return None
             raise ValueError("No matching regional boundary for this event")
         selected = self._read_selected_shapes(boundary_path, selected_indices)
-        min_x = min(shape.bbox[0] for shape, _, _, _ in selected)
-        min_y = min(shape.bbox[1] for shape, _, _, _ in selected)
-        max_x = max(shape.bbox[2] for shape, _, _, _ in selected)
-        max_y = max(shape.bbox[3] for shape, _, _, _ in selected)
+        if cancelled:
+            min_x, min_y, max_x, max_y = TSUNAMI_CANCELLATION_BOUNDS
+        else:
+            min_x = min(shape.bbox[0] for shape, _, _, _ in selected)
+            min_y = min(shape.bbox[1] for shape, _, _, _ in selected)
+            max_x = max(shape.bbox[2] for shape, _, _, _ in selected)
+            max_y = max(shape.bbox[3] for shape, _, _, _ in selected)
         hypocenter = event.get("hypocenter") or (event.get("earthquake") or {}).get("hypocenter") or {}
         lon, lat = _valid_coords(hypocenter.get("longitude"), hypocenter.get("latitude"))
         if lon is not None:
@@ -130,11 +135,15 @@ class MapRenderer:
         if legend_height:
             self._draw_scale_legend(draw, SIDEBAR_HEADER_HEIGHT)
             region_top += legend_height
-        list_image = Image.new("RGB", (list_width, list_height), SEA_COLOR)
-        self._draw_region_list(ImageDraw.Draw(list_image), groups, code, 0, column_width)
-        available_height = max(1, IMAGE_SIZE[1] - region_top)
-        list_image.thumbnail((PANEL_WIDTH, available_height), Image.Resampling.LANCZOS)
-        image.paste(list_image, (0, region_top))
+        if cancelled:
+            draw.text((20, region_top), "津波警報・注意報は", fill=BOUNDARY_COLOR, font=_font(28))
+            draw.text((20, region_top + 45), "すべて解除されました", fill=BOUNDARY_COLOR, font=_font(28))
+        else:
+            list_image = Image.new("RGB", (list_width, list_height), SEA_COLOR)
+            self._draw_region_list(ImageDraw.Draw(list_image), groups, code, 0, column_width)
+            available_height = max(1, IMAGE_SIZE[1] - region_top)
+            list_image.thumbnail((PANEL_WIDTH, available_height), Image.Resampling.LANCZOS)
+            image.paste(list_image, (0, region_top))
         footer_font = _font(24)
         footer_x = map_left + 30
         footer_y = IMAGE_SIZE[1] - 65
