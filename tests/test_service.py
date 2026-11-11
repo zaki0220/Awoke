@@ -617,28 +617,44 @@ def test_test_mode_notifies_old_reports_and_labels_new_and_edited_messages(tmp_p
     store.close()
 
 
-def test_sandbox_underscore_id_is_used_for_notifications_and_edits(tmp_path: Path) -> None:
+@pytest.mark.parametrize("test_mode", [False, True])
+@pytest.mark.parametrize("code", [551, 552, 556])
+def test_underscore_id_is_used_for_notifications_and_updates(
+    tmp_path: Path, test_mode: bool, code: int,
+) -> None:
     import asyncio
 
-    config = Config(test_mode=True, database=tmp_path / "state.sqlite3")
+    config = Config(test_mode=test_mode, database=tmp_path / "state.sqlite3")
     store = Store(config.effective_database)
     discord = FakeDiscord()
     processor = EventProcessor(config, store, discord, FakeRenderer())
-    report = _quake("sandbox-1", "DetailScale", scale=40)
+    if code == 551:
+        report = _quake("report-1", "DetailScale", scale=40)
+    elif code == 552:
+        report = {
+            "code": 552, "id": "report-1", "cancelled": False,
+            "issue": {"time": _TEST_EVENT_TIME, "type": "Focus"},
+            "areas": [{"name": "茨城県", "grade": "Watch"}],
+        }
+    else:
+        report = {
+            "code": 556, "id": "report-1", "issue": {"eventId": "event-1", "serial": 1},
+            "areas": [{"name": "茨城県南部", "scaleTo": 40}],
+        }
     report["_id"] = report.pop("id")
-    report["earthquake"]["time"] = "2023/04/01 00:00:00"
     asyncio.run(processor.process(report))
     asyncio.run(processor.process(report))
-    assert store.report_seen(551, "sandbox-1")
+    assert store.report_seen(code, "report-1")
     assert len(discord.sent) == 1
-    assert len(discord.edited) == 1
+    assert len(discord.edited) == (0 if code == 552 else 1)
     assert "id" not in report
     store.close()
 
 
-@pytest.mark.parametrize("test_mode,sandbox_id", [(False, "sandbox-1"), (True, ""), (True, None)])
-def test_missing_or_invalid_sandbox_id_is_not_processed(
-    tmp_path: Path, test_mode: bool, sandbox_id: str | None
+@pytest.mark.parametrize("test_mode", [False, True])
+@pytest.mark.parametrize("alternate_id", ["", None, 123])
+def test_missing_or_invalid_alternate_id_is_not_processed(
+    tmp_path: Path, test_mode: bool, alternate_id: str | int | None
 ) -> None:
     import asyncio
 
@@ -648,10 +664,119 @@ def test_missing_or_invalid_sandbox_id_is_not_processed(
     processor = EventProcessor(config, store, discord, FakeRenderer())
     report = _quake("sandbox-1", "DetailScale", scale=40)
     del report["id"]
-    report["_id"] = sandbox_id
+    report["_id"] = alternate_id
     asyncio.run(processor.process(report))
     assert not discord.sent
     assert not store.report_seen(551, "sandbox-1")
+    store.close()
+
+
+def test_existing_id_takes_precedence_over_alternate(tmp_path: Path) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    report = _quake("primary", "DetailScale", scale=40)
+    report["_id"] = "alternate"
+    asyncio.run(processor.process(report))
+    assert store.report_seen(551, "primary")
+    assert not store.report_seen(551, "alternate")
+    assert len(discord.sent) == 1
+    store.close()
+
+
+@pytest.mark.parametrize("history_field,buffer_field", [
+    ("_id", "_id"), ("_id", "id"), ("id", "_id"),
+])
+def test_startup_baseline_deduplicates_alternate_id(
+    tmp_path: Path, monkeypatch: Any, history_field: str, buffer_field: str,
+) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    service = Service(processor.config, processor, store)
+    report = _quake("report-1", "DetailScale", scale=40)
+    history_report = dict(report)
+    buffered_report = dict(report)
+    if history_field == "_id":
+        history_report["_id"] = history_report.pop("id")
+    if buffer_field == "_id":
+        buffered_report["_id"] = buffered_report.pop("id")
+
+    async def history() -> list[dict[str, Any]]:
+        return [history_report]
+
+    monkeypatch.setattr("awoke.service.fetch_history", history)
+
+    async def scenario() -> None:
+        await service.queue.put(buffered_report)
+        await service._initialize()
+
+    asyncio.run(scenario())
+    assert store.report_seen(551, "report-1")
+    assert not discord.sent and not discord.edited
+    store.close()
+
+
+def test_reconnect_history_deduplicates_alternate_id(tmp_path: Path, monkeypatch: Any) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    service = Service(processor.config, processor, store)
+    report = _quake("report-1", "DetailScale", scale=40)
+    report["_id"] = report.pop("id")
+
+    async def history() -> list[dict[str, Any]]:
+        return [report]
+
+    monkeypatch.setattr("awoke.service.fetch_history", history)
+    asyncio.run(service._reconcile_history(notify_new=True))
+    asyncio.run(service._reconcile_history(notify_new=True))
+    assert len(discord.sent) == 1
+    assert store.report_seen(551, "report-1")
+    store.close()
+
+
+def test_startup_processes_changed_buffered_report_with_alternate_id(tmp_path: Path, monkeypatch: Any) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    service = Service(processor.config, processor, store)
+    initial = _quake("report-1", "DetailScale", scale=30)
+    initial["_id"] = initial.pop("id")
+    updated = _quake("report-1", "DetailScale", scale=40)
+
+    async def history() -> list[dict[str, Any]]:
+        return [initial]
+
+    monkeypatch.setattr("awoke.service.fetch_history", history)
+
+    async def scenario() -> None:
+        await service.queue.put(updated)
+        await service._initialize()
+
+    asyncio.run(scenario())
+    assert len(discord.sent) == 1
+    assert "最大震度: 4" in discord.sent[0]
+    store.close()
+
+
+def test_history_invalid_id_is_logged_and_does_not_break_reconciliation(
+    tmp_path: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    service = Service(processor.config, processor, store)
+    valid = _quake("report-1", "DetailScale", scale=40)
+
+    async def history() -> list[dict[str, Any]]:
+        return [{"code": 551, "_id": ""}, valid]
+
+    monkeypatch.setattr("awoke.service.fetch_history", history)
+    markers = asyncio.run(service._reconcile_history(notify_new=True))
+    assert markers == {(551, "report-1")}
+    assert len(discord.sent) == 1
+    assert "Ignoring P2P payload without a valid code or id" in caplog.text
     store.close()
 
 

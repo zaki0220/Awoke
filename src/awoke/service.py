@@ -25,6 +25,28 @@ SCALE_LABELS = {10: "1", 20: "2", 30: "3", 40: "4", 45: "5弱", 50: "5強", 55: 
 JST = timezone(timedelta(hours=9))
 
 
+def _normalize_report_id(payload: dict[str, Any]) -> dict[str, Any]:
+    alternate = payload.get("_id")
+    if "id" not in payload and isinstance(alternate, str) and alternate:
+        return {**payload, "id": alternate}
+    return payload
+
+
+def _report_marker(payload: dict[str, Any]) -> tuple[int, str] | None:
+    payload = _normalize_report_id(payload)
+    try:
+        return int(payload.get("code", 0)), str(payload["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _comparable_report(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_report_id(payload)
+    if normalized.get("_id") == normalized.get("id") and "id" in normalized:
+        return {key: value for key, value in normalized.items() if key != "_id"}
+    return normalized
+
+
 class EventProcessor:
     def __init__(self, config: Config, store: Store, discord: DiscordClient, renderer: MapRenderer) -> None:
         self.config = config
@@ -33,16 +55,12 @@ class EventProcessor:
         self.renderer = renderer
 
     async def process(self, payload: dict[str, Any], notify: bool = True) -> None:
-        if self.config.test_mode and "id" not in payload:
-            sandbox_id = payload.get("_id")
-            if isinstance(sandbox_id, str) and sandbox_id:
-                payload = {**payload, "id": sandbox_id}
-        try:
-            code = int(payload.get("code", 0))
-            report_id = str(payload["id"])
-        except (KeyError, TypeError, ValueError):
+        payload = _normalize_report_id(payload)
+        marker = _report_marker(payload)
+        if marker is None:
             LOG.warning("Ignoring P2P payload without a valid code or id")
             return
+        code, report_id = marker
         if code not in (551, 552, 556):
             return
         if not self.config.test_mode and _is_expired_report(code, payload, self.config.retention_days):
@@ -429,26 +447,27 @@ class Service:
                 buffered.append(self.queue.get_nowait())
             except asyncio.QueueEmpty:
                 break
+        discarded = 0
         for payload in buffered:
-            marker = (int(payload.get("code", 0)), str(payload.get("id", "")))
-            if marker in known_ids and self.store.report_payload(*marker) == payload:
+            marker = _report_marker(payload)
+            stored = self.store.report_payload(*marker) if marker is not None and marker in known_ids else None
+            if stored is not None and _comparable_report(stored) == _comparable_report(payload):
+                discarded += 1
                 continue
             await self.processor.process(payload)
-        LOG.info("Startup baseline initialized; discarded %s historical frames", len(buffered) - sum(
-            (int(row.get("code", 0)), str(row.get("id", ""))) not in known_ids for row in buffered
-        ))
+        LOG.info("Startup baseline initialized; discarded %s historical frames", discarded)
 
     async def _reconcile_history(self, notify_new: bool = False) -> set[tuple[int, str]]:
         history = await fetch_history()
         for item in reversed(history):
-            code, report_id = int(item.get("code", 0)), str(item.get("id", ""))
-            is_new = not self.store.report_seen(code, report_id)
+            marker = _report_marker(item)
+            is_new = marker is not None and not self.store.report_seen(*marker)
             await self.processor.process(item, notify=notify_new and is_new)
         LOG.info("Loaded %s reports from P2P history as a silent baseline", len(history))
         return {
-            (int(item["code"]), str(item["id"]))
+            marker
             for item in history
-            if item.get("code") is not None and item.get("id") is not None
+            if (marker := _report_marker(item)) is not None
         }
 
     async def maintenance(self) -> None:
