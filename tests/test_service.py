@@ -433,7 +433,7 @@ def test_tsunami_message_groups_areas_by_severity_and_keeps_arrival_details() ->
         {"name": "千葉県", "grade": "Watch", "maxHeight": {"description": "１ｍ"},
          "firstHeight": {"condition": "津波到達中と推測"}},
         {"name": "宮城県", "grade": "MajorWarning", "maxHeight": {"description": "巨大"},
-         "firstHeight": {"arrivalTime": "2023/10/09 12:30:00", "condition": "第１波の到達を確認"}},
+         "firstHeight": {"arrivalTime": "2023/10/09 12:30:45", "condition": "第１波の到達を確認"}},
         {"name": "高知県", "grade": "Warning", "maxHeight": {"description": "３ｍ"},
          "firstHeight": {"arrivalTime": "2023/10/09 13:00:00"}},
         {"name": "岩手県", "grade": "MajorWarning", "maxHeight": {"description": "１０ｍ超"}},
@@ -442,14 +442,34 @@ def test_tsunami_message_groups_areas_by_severity_and_keeps_arrival_details() ->
     assert _format_message(552, state) == (
         "**津波情報**\n"
         "【大津波警報】\n"
-        "宮城県\t巨大\t2023/10/09 12:30:00 / 第１波の到達を確認\n"
+        "宮城県\t巨大\t12:30 / 第１波の到達を確認\n"
         "岩手県\t１０ｍ超\t不明\n"
         "【津波警報】\n"
-        "高知県\t３ｍ\t2023/10/09 13:00:00\n"
+        "高知県\t３ｍ\t13:00\n"
         "【津波注意報】\n"
         "千葉県\t１ｍ\t津波到達中と推測\n"
         "静岡県\t不明\t不明"
     )
+
+
+def test_tsunami_arrival_time_keeps_invalid_values_and_issue_time(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    state = {
+        "issue_time": "2023/10/09 23:59:30",
+        "areas": [
+            {"name": "区域A", "grade": "Watch", "firstHeight": {"arrivalTime": "2023/10/10 00:01:59"}},
+            {"name": "区域B", "grade": "Watch", "firstHeight": {"arrivalTime": "時刻未定", "condition": "到達中"}},
+        ],
+    }
+    assert _format_message(552, state) == (
+        "**津波情報**\n"
+        "発表時刻: 2023/10/09 23:59:30\n"
+        "【津波注意報】\n"
+        "区域A\t不明\t00:01\n"
+        "区域B\t不明\t時刻未定 / 到達中"
+    )
+    assert "Unexpected tsunami arrival time format" in caplog.text
 
 
 def test_tsunami_message_preserves_unknown_grades(caplog: pytest.LogCaptureFixture) -> None:

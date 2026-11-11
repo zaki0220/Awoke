@@ -33,6 +33,59 @@ def test_fixed_canvas_reserves_left_sidebar_and_right_map_viewport() -> None:
     assert map_render._map_origin_x(map_render.MAP_SIZE) + map_render.MAP_SIZE[0] == 1920
 
 
+def test_tsunami_table_displays_each_region_on_one_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Font:
+        def getlength(self, text: str) -> float:
+            return len(text) * 10
+
+    texts: list[tuple[tuple[int, int], str]] = []
+    cells: list[tuple[int, int, str, int]] = []
+    monkeypatch.setattr(map_render, "_font", lambda size: Font())
+    monkeypatch.setattr(
+        map_render, "_draw_tsunami_cell",
+        lambda image, x, y, text, width, font: cells.append((x, y, text, width)),
+    )
+    monkeypatch.setattr(
+        ImageDraw.ImageDraw, "text",
+        lambda self, xy, text, **kwargs: texts.append((xy, text)),
+    )
+    areas = [
+        {"name": "区域A", "grade": "Watch", "maxHeight": {"description": "１ｍ"},
+         "firstHeight": {"arrivalTime": "2023/10/09 12:30:45", "condition": "第１波の到達を確認"}},
+        {"name": "区域B", "grade": "MajorWarning"},
+        {"name": "区域C", "grade": "Warning",
+         "firstHeight": {"condition": "津波到達中と推測"}},
+        {"name": "未対応区域", "grade": "Unknown"},
+    ]
+    image = MapRenderer._tsunami_table(areas)
+    assert image.width == 480
+    labels = [text for _, text in texts]
+    assert labels[:3] == ["予報区", "予想高さ", "到達予想"]
+    assert labels.index("大津波警報") < labels.index("津波警報") < labels.index("津波注意報")
+    assert "種別不明" in labels
+    assert [text for x, _, text, _ in cells if x == 20] == ["区域B", "区域C", "区域A", "未対応区域"]
+    assert [text for x, _, text, _ in cells if x == 320] == [
+        "不明", "津波到達中と推測", "12:30 / 第１波の到達を確認", "不明",
+    ]
+    assert [text for x, _, text, _ in cells if x == 230] == ["不明", "不明", "１ｍ", "不明"]
+    assert len(cells) == 12
+    for row in range(4):
+        assert [x for x, _, _, _ in cells[row * 3:row * 3 + 3]] == [20, 230, 320]
+        assert len({y for _, y, _, _ in cells[row * 3:row * 3 + 3]}) == 1
+    assert all(y < image.height for (_, y), _ in texts)
+    assert all(y < image.height for _, y, _, _ in cells)
+
+
+def test_tsunami_cell_fits_long_text_without_crossing_column() -> None:
+    font = ImageFont.load_default(size=20)
+    image = Image.new("RGB", (480, 40), map_render.SEA_COLOR)
+    map_render._draw_tsunami_cell(image, 320, 0, "12:30 / long arrival condition", 140, font)
+    assert image.crop((320, 0, 460, 40)).getcolors() != [(140 * 40, map_render.SEA_COLOR)]
+    assert image.crop((460, 0, 480, 40)).getcolors() == [(20 * 40, map_render.SEA_COLOR)]
+
+
 def test_tsunami_cancellation_renders_uncolored_japan_map_and_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -55,6 +108,7 @@ def test_tsunami_cancellation_renders_uncolored_japan_map_and_message(
         return original_layout(box, size)
 
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda self, xy, value, **kw: text.append(value))
     monkeypatch.setattr(map_render, "_draw_boundary", draw_boundary)
     monkeypatch.setattr(map_render, "_map_layout", layout)
@@ -143,6 +197,7 @@ def test_unselected_land_in_visible_margins_is_rendered(
     monkeypatch.setattr(renderer, "_iter_land_shapes", track_shapes)
     monkeypatch.setattr(map_render, "MAP_SIZE", size)
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
@@ -210,6 +265,7 @@ def test_observation_palette_matches_rendered_region_and_legend(
 
     image = Image.new("RGB", (map_render.PANEL_WIDTH, map_render.LEGEND_HEIGHT), map_render.SEA_COLOR)
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     MapRenderer._draw_scale_legend(ImageDraw.Draw(image))
     index = list(SCALE_RGB).index(scale)
@@ -316,6 +372,7 @@ def test_unmapped_observation_is_skipped_when_other_points_are_mapped(
     monkeypatch.setattr(renderer, "_iter_land_shapes", lambda path, bounds: iter([]))
     monkeypatch.setattr(map_render, "MAP_SIZE", (200, 200))
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
@@ -376,6 +433,7 @@ def test_region_list_displays_every_name_and_intensity(monkeypatch: pytest.Monke
             texts.append(text)
 
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     selected = [
         (None, "低震度", SCALE_RGB[20], "震度2"),
         (None, "高震度A", SCALE_RGB[55], "震度6弱"),
@@ -400,6 +458,7 @@ def test_legend_is_in_left_panel_above_region_list(monkeypatch: pytest.MonkeyPat
             texts.append((xy, text))
 
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     draw = Draw()
     MapRenderer._draw_scale_legend(draw)
     MapRenderer._draw_region_list(draw, [("震度3", SCALE_RGB[30], ["区域"])], 551, map_render.LEGEND_HEIGHT)
@@ -431,6 +490,7 @@ def test_three_columns_keep_groups_order_and_fit_all_names(monkeypatch: pytest.M
             texts.append((xy, text))
 
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     groups = [
         ("震度5弱", SCALE_RGB[45], [f"地域{i}" for i in range(7)]),
         ("震度2", SCALE_RGB[20], ["次の地域"]),
@@ -470,6 +530,7 @@ def test_large_region_lists_do_not_change_map_image_dimensions(
     by_code = {str(i): (i, name) for i, name in enumerate(names)}
     monkeypatch.setattr(map_render, "MAP_SIZE", size)
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 800 if len(groups[0][2]) > 1 else 200)
     monkeypatch.setattr(renderer, "_read_boundary_index", lambda path: (index, by_code))
     monkeypatch.setattr(renderer, "_read_selected_shapes", lambda path, selected: [
@@ -480,6 +541,10 @@ def test_large_region_lists_do_not_change_map_image_dimensions(
     monkeypatch.setattr(renderer, "_draw_intensity_markers", lambda *args: None)
     drawn: list[str] = []
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda self, xy, text, **kwargs: drawn.append(text))
+    monkeypatch.setattr(
+        map_render, "_draw_tsunami_cell",
+        lambda image, x, y, text, width, font: drawn.append(text),
+    )
 
     def event(selected: list[str]) -> dict[str, Any]:
         if code == 551:
@@ -627,6 +692,7 @@ def test_render_uses_dark_sea_gray_land_and_light_boundaries(
     )
     monkeypatch.setattr(map_render, "MAP_SIZE", (200, 200))
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
@@ -662,6 +728,7 @@ def test_background_uses_jma_seismic_not_natural_earth(
     loaded: list[Path] = []
     monkeypatch.setattr(map_render, "MAP_SIZE", (200, 200))
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
@@ -717,6 +784,7 @@ def test_tsunami_open_multipart_lines_do_not_fill_or_connect_endpoints(
     ])
     monkeypatch.setattr(map_render, "MAP_SIZE", map_size)
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     map_label_calls: list[tuple[Any, ...]] = []
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: map_label_calls.append(args))
@@ -763,6 +831,7 @@ def test_tsunami_overlapping_lines_render_highest_warning_on_top(
     )
     monkeypatch.setattr(map_render, "MAP_SIZE", map_size)
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)
     monkeypatch.setattr(renderer, "_draw_region_list", lambda *args: None)
@@ -858,6 +927,7 @@ def test_wide_event_map_keeps_hypocenter_and_selected_regions_visible(
         for box in boxes
     ]
     monkeypatch.setattr(map_render, "_font", lambda size: None)
+    monkeypatch.setattr(map_render, "_draw_tsunami_cell", lambda *args: None)
     monkeypatch.setattr(renderer, "_region_column_width", lambda groups: 200)
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", lambda *args, **kwargs: None)
     monkeypatch.setattr(renderer, "_draw_region_labels", lambda *args: None)

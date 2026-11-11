@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awoke"
-version = "0.3.0b1"
+version = "0.3.0b2"
 description = "P2P earthquake notifications to Discord"
 requires-python = ">=3.11"
 dependencies = [

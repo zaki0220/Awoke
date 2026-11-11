@@ -15,6 +15,7 @@ from typing import Any
 
 from awoke.config import Config, webhook_credential
 from awoke.discord import DiscordClient
+from awoke.formatting import format_tsunami_arrival_time
 from awoke.map_render import TSUNAMI_GRADES, MapRenderer
 from awoke.p2p import fetch_history, open_stream, stream_reader
 from awoke.store import Store
@@ -655,8 +656,12 @@ def _format_message(code: int, state: dict[str, Any]) -> str:
                     label = f"種別不明（{grade}）"
                 height = (area.get("maxHeight") or {}).get("description")
                 first_height = area.get("firstHeight") or {}
+                arrival_time = first_height.get("arrivalTime")
                 arrival = " / ".join(
-                    str(value) for value in (first_height.get("arrivalTime"), first_height.get("condition"))
+                    str(value) for value in (
+                        format_tsunami_arrival_time(arrival_time) if arrival_time else None,
+                        first_height.get("condition"),
+                    )
                     if value
                 )
                 row = "\t".join((str(area.get("name") or "地域不明"), str(height or "不明"), arrival or "不明"))
