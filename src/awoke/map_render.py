@@ -11,6 +11,8 @@ from typing import Any, Iterator
 import shapefile
 from PIL import Image, ImageDraw, ImageFont
 
+from awoke.formatting import format_tsunami_arrival_time
+
 LOG = logging.getLogger(__name__)
 SCALE_LABELS_TEXT = {
     10: "震度1", 20: "震度2", 30: "震度3", 40: "震度4", 45: "震度5弱",
@@ -138,6 +140,11 @@ class MapRenderer:
         if cancelled:
             draw.text((20, region_top), "津波警報・注意報は", fill=BOUNDARY_COLOR, font=_font(28))
             draw.text((20, region_top + 45), "すべて解除されました", fill=BOUNDARY_COLOR, font=_font(28))
+        elif code == 552:
+            list_image = self._tsunami_table(event.get("areas", []))
+            available_height = max(1, IMAGE_SIZE[1] - region_top)
+            list_image.thumbnail((PANEL_WIDTH, available_height), Image.Resampling.LANCZOS)
+            image.paste(list_image, (0, region_top))
         else:
             list_image = Image.new("RGB", (list_width, list_height), SEA_COLOR)
             self._draw_region_list(ImageDraw.Draw(list_image), groups, code, 0, column_width)
@@ -319,6 +326,55 @@ class MapRenderer:
             y += 48 * math.ceil(len(names) / REGION_COLUMNS)
 
     @staticmethod
+    def _tsunami_table(areas: list[dict[str, Any]]) -> Image.Image:
+        font = _font(20)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for area in areas:
+            grade = area.get("grade")
+            grouped.setdefault(grade if grade in TSUNAMI_GRADES else "Unknown", []).append(area)
+        ranks = {grade: details[2] for grade, details in TSUNAMI_GRADES.items()}
+        groups = sorted(grouped.items(), key=lambda item: -ranks.get(item[0], 0))
+        columns = (20, 230, 320)
+        widths = (200, 80, 140)
+        rows: list[tuple[str, tuple[int, int, int], list[tuple[str, str, str]]]] = []
+        height = 50
+        for grade, items in groups:
+            label, color, _ = TSUNAMI_GRADES.get(grade, ("種別不明", BOUNDARY_COLOR, 0))
+            group_rows = []
+            for area in sorted(items, key=lambda item: str(item.get("name") or "")):
+                first_height = area.get("firstHeight") or {}
+                arrival_time = first_height.get("arrivalTime")
+                arrival = " / ".join(
+                    str(value) for value in (
+                        format_tsunami_arrival_time(arrival_time) if arrival_time else None,
+                        first_height.get("condition"),
+                    ) if value
+                )
+                values = (
+                    str(area.get("name") or "地域不明"),
+                    str((area.get("maxHeight") or {}).get("description") or "不明"),
+                    arrival or "不明",
+                )
+                group_rows.append(values)
+                height += 34
+            height += 34
+            rows.append((label, color, group_rows))
+        image = Image.new("RGB", (PANEL_WIDTH, height), SEA_COLOR)
+        draw = ImageDraw.Draw(image)
+        for x, label in zip(columns, ("予報区", "予想高さ", "到達予想")):
+            draw.text((x, 0), label, fill=BOUNDARY_COLOR, font=font)
+        y = 40
+        for label, color, group_rows in rows:
+            draw.rectangle((20, y + 4, 36, y + 20), fill=color, outline=BOUNDARY_COLOR)
+            draw.text((45, y), label, fill=BOUNDARY_COLOR, font=font)
+            y += 34
+            for values in group_rows:
+                for x, width, value in zip(columns, widths, values):
+                    _draw_tsunami_cell(image, x, y, value, width, font)
+                y += 34
+        return image
+
+    @staticmethod
     def _draw_scale_legend(draw: ImageDraw.ImageDraw, top: int = 0) -> None:
         font = _font(20)
         draw.rectangle(
@@ -368,6 +424,20 @@ class MapRenderer:
     def _iter_land_shapes(path: Path, bounds: tuple[float, float, float, float]) -> Iterator[Any]:
         with shapefile.Reader(str(path), encoding="utf-8") as reader:
             yield from reader.iterShapes(bbox=bounds)
+
+
+def _draw_tsunami_cell(
+    image: Image.Image, x: int, y: int, text: str, width: int, font: ImageFont.FreeTypeFont,
+) -> None:
+    text = " ".join(text.split())
+    left, top, right, bottom = font.getbbox(text)
+    if right <= left or bottom <= top:
+        return
+    cell = Image.new("RGBA", (right - left, bottom - top), (0, 0, 0, 0))
+    ImageDraw.Draw(cell).text((-left, -top), text, fill=BOUNDARY_COLOR, font=font)
+    if cell.width > width:
+        cell = cell.resize((width, cell.height), Image.Resampling.LANCZOS)
+    image.paste(cell, (x, y + top), cell)
 
 
 def _valid_coords(lon: Any, lat: Any) -> tuple[float | None, float | None]:
