@@ -149,7 +149,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   - 地域の削除またはいずれかの地域での警報の引き下げ時は、直前の投稿を残して新規投稿する。拡大・引き上げが同時にある場合も新規投稿する。比較順序は津波注意報、津波警報、大津波警報とする。種別不明の場合は大小を推定せず警告する。残る地図は縮小直前の状態であり、全期間の最大範囲を合成したものではない。
   - 全解除は`cancelled`で判定する。縮小・引き下げによる新規投稿がなければ解除用の新規投稿を作成し、あれば最新投稿を解除表示へ編集する。それまで残した投稿の本文に「（解除済）」を追記し、画像は変更しない。解除済み表示の編集に失敗した場合はログに記録し、後続の津波報受信時に再試行する。
   - `issue.time`の発表順で管理し、古い報告や同時刻・同内容の再配信は反映しない。同時刻で内容が異なる場合は警告して反映しない。有効な発表時刻、`cancelled`、地域一覧が欠ける報告は警告して処理しない。解除後は、解除報より新しい発表を新規の一連の情報として扱う。
-- **緊急地震速報（556）**: 警報を震度の設定値に関係なく通知する。本文には取得できる震源、マグニチュード、予想最大震度を表示し、予測であることを明記する。発表地域の一覧は本文に含めず、地図画像の左側に表示する。
+- **緊急地震速報（556）**: 警報を震度の設定値に関係なく通知する。本文には取得できる震源、マグニチュード、予想最大震度を表示し、予測であることを明記する。`earthquake.condition`が「仮定震源要素」の場合は、マグニチュードを表示しない。発表地域の一覧は本文に含めず、地図画像の左側に表示する。
   - 予想最大震度は受信した発表地域の`scaleTo`（予想震度の上限）の最大値とする。上限が「以上」の場合は`scaleFrom`（下限）を考慮して「以上」と表示し、上限が不明な地域が含まれる場合はその旨を付記する。すべて不明なら「不明」とする。
   - `issue.eventId`を地震単位のキー、`issue.serial`を報の順序として扱う仮仕様で実装する。同一`eventId`の続報は状態を更新して既存メッセージを編集し、古いserialは状態に反映しない。取消は`cancelled`を確認して反映する。フィールド欠落や矛盾がある場合は誤結合せずログに記録する。この仮仕様は実データで検証して調整する。
 
@@ -219,7 +219,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 - **日本語フォント**: Rocky Linux 9では`sudo dnf install --enablerepo=crb google-noto-sans-cjk-jp-fonts`を実行し、`/usr/share/fonts/google-noto-cjk/NotoSansCJKjp-Regular.otf`が読み取れることを確認する。`--enablerepo=crb`はこの実行時のみCRBを有効にする。パッケージが見つからない場合は、利用可能なリポジトリを管理者に確認する。フォント導入後はサービスを再起動する。
 - **データ保護**: SQLiteの運用データは最終更新から7日経過後に削除する。バックアップは作成しないため、ディスク障害などでは通知履歴やメッセージ対応情報を失う可能性がある。
 - 7日間の保存期限を過ぎて対応情報が削除された後に同じ情報の更新報が届いた場合は、新規投稿や既存メッセージの編集を行わず、期限切れ情報としてログにのみ記録する。
-- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.3.0b3.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
+- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.3.0b4.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
 - **Rocky Linux 9への初回配置**: ZIPを一時ディレクトリへ展開し、ZIP内の`pyproject.toml`を含むディレクトリの内容を`/opt/awoke/`へコピーする（`pyproject.toml`が`/opt/awoke/pyproject.toml`、地図データが`/opt/awoke/share/`となる配置）。ZIPのバージョン名を固定せず、展開後にファイルから配置元を特定する:
 
   ```sh
@@ -263,12 +263,12 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   sudo systemctl enable --now awoke.service
   sudo systemctl status awoke.service --no-pager
   ```
-- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.3.0b3`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
+- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.3.0b4`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
 
   ```sh
   release_tmp=$(mktemp -d /tmp/awoke-update.XXXXXX)
-  unzip -q /tmp/awoke-0.3.0b3.zip -d "$release_tmp"
-  release_dir="$release_tmp/awoke-0.3.0b3"
+  unzip -q /tmp/awoke-0.3.0b4.zip -d "$release_tmp"
+  release_dir="$release_tmp/awoke-0.3.0b4"
   ls -ld "$release_dir/pyproject.toml" "$release_dir/share" "$release_dir/systemd/awoke.service"
   ```
 
@@ -291,7 +291,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   tsunami_shapefile = "/opt/awoke/share/20240520_AreaTsunami_GIS/tsunami.shp"
   ```
 
-  表示されたバージョンが`0.3.0b3`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
+  表示されたバージョンが`0.3.0b4`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
 
   ```sh
   sudo -u Awoke test -r /opt/awoke/share/20240520_AreaForecastLocalE_GIS/seismic.shp

@@ -703,7 +703,11 @@ def _format_message(code: int, state: dict[str, Any]) -> str:
         lines.append(f"イベント: {issue['eventId']} / 第{issue.get('serial', '?')}報")
     if hypocenter.get("name"):
         lines.append(f"震源: {hypocenter['name']}")
-    if hypocenter.get("magnitude") is not None and hypocenter.get("magnitude") >= 0:
+    if (
+        earthquake.get("condition") != "仮定震源要素"
+        and hypocenter.get("magnitude") is not None
+        and hypocenter.get("magnitude") >= 0
+    ):
         lines.append(f"マグニチュード: M{hypocenter['magnitude']}")
     lines.append(f"予想最大震度: {_eew_maximum_scale(state.get('areas') or [])}")
     return "\n".join(lines)

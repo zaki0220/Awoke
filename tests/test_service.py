@@ -269,6 +269,22 @@ def test_eew_sample_message_uses_maximum_forecast_not_region_list() -> None:
     assert "静岡県西部" not in message
 
 
+def test_eew_message_omits_magnitude_for_assumed_hypocenter() -> None:
+    state = {
+        "earthquake": {
+            "condition": "仮定震源要素",
+            "hypocenter": {"name": "震源地", "magnitude": 1.0},
+        },
+        "areas": [{"name": "発表地域", "scaleTo": 40}],
+    }
+
+    message = _format_message(556, state)
+
+    assert "震源: 震源地" in message
+    assert "マグニチュード:" not in message
+    assert "予想最大震度: 4" in message
+
+
 def _tsunami(report_id: str, minute: int, areas: list[dict[str, Any]], cancelled: bool = False) -> dict[str, Any]:
     return {
         "code": 552, "id": report_id, "cancelled": cancelled,
