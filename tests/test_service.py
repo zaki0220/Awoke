@@ -507,6 +507,19 @@ def test_unknown_intensity_is_not_formatted_as_zero() -> None:
     assert "最大震度" not in message
 
 
+@pytest.mark.parametrize(("depth", "expected"), [
+    (0, "深さ: ごく浅い"),
+    (10, "深さ: 10 km"),
+    (None, None),
+])
+def test_earthquake_message_formats_depth(depth: int | None, expected: str | None) -> None:
+    message = _format_message(551, {"hypocenter": {"depth": depth}})
+    if expected is None:
+        assert "深さ:" not in message
+    else:
+        assert expected in message
+
+
 @pytest.mark.parametrize("code,state", [
     (551, {"hypocenter": {"magnitude": 4.4}}),
     (552, {"areas": []}),

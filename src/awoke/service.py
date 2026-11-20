@@ -654,7 +654,8 @@ def _format_message(code: int, state: dict[str, Any]) -> str:
         if hypocenter.get("magnitude") is not None:
             lines.append(f"マグニチュード: M{hypocenter['magnitude']}")
         if hypocenter.get("depth") is not None:
-            lines.append(f"深さ: {hypocenter['depth']} km")
+            depth = "ごく浅い" if hypocenter["depth"] == 0 else f"{hypocenter['depth']} km"
+            lines.append(f"深さ: {depth}")
         return "\n".join(lines)
     if code == 552:
         lines = ["**津波情報**"]
