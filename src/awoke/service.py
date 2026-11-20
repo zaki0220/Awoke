@@ -196,16 +196,7 @@ class EventProcessor:
             try:
                 await self.discord.edit(message_id, content, image)
             except Exception:
-                LOG.exception("Discord tsunami edit failed; posting replacement event=%s", event_key)
-                if notify:
-                    archives.append({
-                        "message_id": message_id,
-                        "content": previous["content"],
-                        "marked": False,
-                    })
-                    timeline["current"]["message_id"] = None
-                    self.store.save_event(event_key, 552, issue_time, timeline, None)
-                    await self._send_tsunami(event_key, timeline, content, image)
+                LOG.exception("Discord tsunami edit failed; not posting replacement event=%s", event_key)
         elif notify:
             await self._send_tsunami(event_key, timeline, content, image)
         if cancelled:
@@ -375,13 +366,7 @@ class EventProcessor:
         try:
             await self.discord.edit(message_id, content, image)
         except Exception:
-            LOG.exception("Discord edit failed; posting replacement event=%s", event_key)
-            try:
-                new_id = await self.discord.send(content, image)
-                if new_id:
-                    self.store.set_message_id(event_key, new_id)
-            except Exception:
-                LOG.exception("Discord replacement post failed event=%s", event_key)
+            LOG.exception("Discord edit failed; not posting replacement event=%s", event_key)
 
     def _notification(self, code: int, state: dict[str, Any]) -> tuple[str, bytes | None]:
         content = _format_message(code, state)
