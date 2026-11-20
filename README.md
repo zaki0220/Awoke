@@ -140,7 +140,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 
 - **地震情報（551）**: 全国の最大震度が設定値以上の場合に通知する。震度の初期設定値は4とし、設定で変更可能にする。
   - 震度は `1 < 2 < 3 < 4 < 5弱 < 5強 < 6弱 < 6強 < 7` の順で比較し、`maxScale`を震度に対応付ける。震度情報なしや不明な値は震度0とみなさず、ログに記録する。
-  - 発生時刻、震源地、最大震度、マグニチュード、深さ、取得できた場合は津波情報を含める。マグニチュードは「マグニチュード: M4.4」の形式で表示する。津波情報が不明の場合は「心配なし」と推測しない。
+  - 発生時刻、震源地、最大震度、マグニチュード、深さ、取得できた場合は津波情報を含める。マグニチュードは「マグニチュード: M4.4」の形式で表示し、深さが0kmの場合は「ごく浅い」と表示する。津波情報が不明の場合は「心配なし」と推測しない。
   - 発生時刻は分単位で「2023/05/11 18:52頃」のように表示する。地震の識別や保存には元の時刻を使用する。
   - 初報が設定値未満で未通知の場合でも、更新後に設定値以上になれば新規メッセージを送信する。通知後に設定値未満になった場合も既存メッセージを編集して訂正を反映する。
 - **津波情報（552）**: 津波注意報・津波警報・大津波警報を、震度の設定値に関係なく通知する。取得できる予報区、警報・注意報の種類、予想される高さ、到達予想時刻などを表示する。
@@ -219,7 +219,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 - **日本語フォント**: Rocky Linux 9では`sudo dnf install --enablerepo=crb google-noto-sans-cjk-jp-fonts`を実行し、`/usr/share/fonts/google-noto-cjk/NotoSansCJKjp-Regular.otf`が読み取れることを確認する。`--enablerepo=crb`はこの実行時のみCRBを有効にする。パッケージが見つからない場合は、利用可能なリポジトリを管理者に確認する。フォント導入後はサービスを再起動する。
 - **データ保護**: SQLiteの運用データは最終更新から7日経過後に削除する。バックアップは作成しないため、ディスク障害などでは通知履歴やメッセージ対応情報を失う可能性がある。
 - 7日間の保存期限を過ぎて対応情報が削除された後に同じ情報の更新報が届いた場合は、新規投稿や既存メッセージの編集を行わず、期限切れ情報としてログにのみ記録する。
-- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.3.0b4.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
+- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.3.0b5.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
 - **Rocky Linux 9への初回配置**: ZIPを一時ディレクトリへ展開し、ZIP内の`pyproject.toml`を含むディレクトリの内容を`/opt/awoke/`へコピーする（`pyproject.toml`が`/opt/awoke/pyproject.toml`、地図データが`/opt/awoke/share/`となる配置）。ZIPのバージョン名を固定せず、展開後にファイルから配置元を特定する:
 
   ```sh
@@ -263,12 +263,12 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   sudo systemctl enable --now awoke.service
   sudo systemctl status awoke.service --no-pager
   ```
-- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.3.0b4`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
+- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.3.0b5`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
 
   ```sh
   release_tmp=$(mktemp -d /tmp/awoke-update.XXXXXX)
-  unzip -q /tmp/awoke-0.3.0b4.zip -d "$release_tmp"
-  release_dir="$release_tmp/awoke-0.3.0b4"
+  unzip -q /tmp/awoke-0.3.0b5.zip -d "$release_tmp"
+  release_dir="$release_tmp/awoke-0.3.0b5"
   ls -ld "$release_dir/pyproject.toml" "$release_dir/share" "$release_dir/systemd/awoke.service"
   ```
 
@@ -291,7 +291,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   tsunami_shapefile = "/opt/awoke/share/20240520_AreaTsunami_GIS/tsunami.shp"
   ```
 
-  表示されたバージョンが`0.3.0b4`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
+  表示されたバージョンが`0.3.0b5`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
 
   ```sh
   sudo -u Awoke test -r /opt/awoke/share/20240520_AreaForecastLocalE_GIS/seismic.shp
