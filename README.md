@@ -3,7 +3,7 @@
 ## AWOKE
 『ラブライブ!蓮ノ空女学院スクールアイドルクラブ』から派生したミニユニットDOLLCHESTRAのデビュー曲。([ピクシブ百科事典](https://dic.pixiv.net/a/AWOKE))
 
-**Not a maronite 気づいてよ**
+**Not a marionette... 「気付いてよ...」**
 - [
 DOLLCHESTRA 「AWOKE」 リリックビデオ (ラブライブ！蓮ノ空女学院スクールアイドルクラブ)(ドルケストラ)](https://www.youtube.com/watch?v=KnnSr-kI5sk)
 
