@@ -161,7 +161,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 - 初報の送信時はWebhookに`wait=true`を指定し、551は地震単位の状態キーとDiscordのメッセージIDを、個々のP2P報告`id`との対応と合わせてSQLiteに保存する。552は発表時刻と一連の投稿ID・内容を保存し、556は`issue.eventId`を基本キーとして各報告の`id`と`issue.serial`も保存する。保存期限が過ぎて削除された情報は復元できない。
 - 既存バージョンで報告IDごとに投稿された552メッセージは、新しい一連の投稿管理には自動移行しない。アップデート後は履歴照合または新たな受信情報から状態を作成する。
 - 551の報告が一意な既存地震に統合された場合は、その地震に対応するDiscordメッセージを編集して統合後の状態を反映する。候補が曖昧、または震源情報が矛盾する場合は誤編集を避けて統合せず、ログに記録する。556は同じ`issue.eventId`の続報を既存メッセージへ反映する。対応するメッセージがまだない場合、551は現在の最大震度が閾値以上なら新規送信し、552・556は新規メッセージを送信する。551で初報が閾値未満だった場合も、後続更新が閾値以上になった時点で新規送信する。
-- 既存メッセージを編集できない場合は、その旨をログに記録し、最新内容で新規メッセージを投稿する。
+- 既存メッセージを編集できない場合は、その旨をログに記録し、代替の新規メッセージは投稿しない。既存のメッセージIDは保持するが、失敗した編集は直ちには再試行しないため、Discordの表示が最新にならない場合がある。後続報などで再び編集が行われれば更新される。
 - メッセージの編集は新規メッセージではないため、Discordで再度通知されることは期待しない。
 
 ## 地図表示仕様案
@@ -219,7 +219,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 - **日本語フォント**: Rocky Linux 9では`sudo dnf install --enablerepo=crb google-noto-sans-cjk-jp-fonts`を実行し、`/usr/share/fonts/google-noto-cjk/NotoSansCJKjp-Regular.otf`が読み取れることを確認する。`--enablerepo=crb`はこの実行時のみCRBを有効にする。パッケージが見つからない場合は、利用可能なリポジトリを管理者に確認する。フォント導入後はサービスを再起動する。
 - **データ保護**: SQLiteの運用データは最終更新から7日経過後に削除する。バックアップは作成しないため、ディスク障害などでは通知履歴やメッセージ対応情報を失う可能性がある。
 - 7日間の保存期限を過ぎて対応情報が削除された後に同じ情報の更新報が届いた場合は、新規投稿や既存メッセージの編集を行わず、期限切れ情報としてログにのみ記録する。
-- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.3.0b5.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
+- **リリース作成**: リポジトリルートで`python tools/create_release.py <出力ディレクトリ>`を実行する。ソース、依存定義、551対応表、使用中のJMA GISシェープファイルをZIPにまとめる。サンプルJSONは含めない。Windows PowerShellでは、例えば`python tools/create_release.py C:\Temp\awoke-release`を実行し、生成された`C:\Temp\awoke-release\awoke-0.3.0b6.zip`をサーバーへ転送する。エクスプローラーでリポジトリフォルダーを直接ZIP化したものはリリースZIPではない（`.git`フォルダーが含まれている場合は特に異なる）。
 - **Rocky Linux 9への初回配置**: ZIPを一時ディレクトリへ展開し、ZIP内の`pyproject.toml`を含むディレクトリの内容を`/opt/awoke/`へコピーする（`pyproject.toml`が`/opt/awoke/pyproject.toml`、地図データが`/opt/awoke/share/`となる配置）。ZIPのバージョン名を固定せず、展開後にファイルから配置元を特定する:
 
   ```sh
@@ -263,12 +263,12 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   sudo systemctl enable --now awoke.service
   sudo systemctl status awoke.service --no-pager
   ```
-- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.3.0b5`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
+- **リリース更新**: 新しいリリースZIPをサーバーへ転送し、新しい一時ディレクトリへ展開する。下記は`0.3.0b6`の例なので、更新するZIPと展開先のバージョンを実際のものに合わせる。エラーが出た場合は先に進まない。
 
   ```sh
   release_tmp=$(mktemp -d /tmp/awoke-update.XXXXXX)
-  unzip -q /tmp/awoke-0.3.0b5.zip -d "$release_tmp"
-  release_dir="$release_tmp/awoke-0.3.0b5"
+  unzip -q /tmp/awoke-0.3.0b6.zip -d "$release_tmp"
+  release_dir="$release_tmp/awoke-0.3.0b6"
   ls -ld "$release_dir/pyproject.toml" "$release_dir/share" "$release_dir/systemd/awoke.service"
   ```
 
@@ -291,7 +291,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
   tsunami_shapefile = "/opt/awoke/share/20240520_AreaTsunami_GIS/tsunami.shp"
   ```
 
-  表示されたバージョンが`0.3.0b5`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
+  表示されたバージョンが`0.3.0b6`であることを確認する。設定保存後、地図ファイルを確認してサービスを起動する。起動前の時刻からログを表示する。
 
   ```sh
   sudo -u Awoke test -r /opt/awoke/share/20240520_AreaForecastLocalE_GIS/seismic.shp
@@ -341,7 +341,7 @@ sudo journalctl -u awoke.service --since "$awoke_log_since" --no-pager
 
    `active (running)`を確認し、次の通知が変更先に届くことを確認する。起動成功だけではWebhookへの送信成功は保証されない。ログを共有する場合は秘密情報が含まれないことを確認する。
 
-別のWebhookに変更すると、以前のWebhookが作成したメッセージは新しいWebhookでは編集できない。続報の編集に失敗した場合、最新内容が新規投稿されることがあり、過去の津波投稿への「解除済」追記も失敗する可能性がある。停止中の情報は履歴から可能な範囲で照合するが、すべての復元は保証されない。テストモードでは履歴照合を行わない。
+別のWebhookに変更すると、以前のWebhookが作成したメッセージは新しいWebhookでは編集できない。続報の編集に失敗しても代替の新規投稿は行わず、過去の津波投稿への「解除済」追記も失敗する可能性がある。停止中の情報は履歴から可能な範囲で照合するが、すべての復元は保証されない。テストモードでは履歴照合を行わない。
 
 ## 検証項目
 

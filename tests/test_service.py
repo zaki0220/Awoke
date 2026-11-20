@@ -197,6 +197,73 @@ def test_eew_update_edits_maximum_and_cancellation_keeps_notice(tmp_path: Path) 
     store.close()
 
 
+@pytest.mark.parametrize("code", [551, 556])
+@pytest.mark.parametrize("notify", [False, True])
+def test_failed_edit_does_not_send_replacement(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, code: int, notify: bool,
+) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    if code == 551:
+        report = _quake("report-1", "DetailScale", scale=40)
+    else:
+        report = {
+            "code": 556, "id": "report-1",
+            "issue": {"eventId": "event-1", "serial": 1},
+            "areas": [{"name": "茨城県南部", "scaleTo": 40}],
+        }
+    asyncio.run(processor.process(report))
+    event_key = store.report_event_key(code, "report-1")
+    assert event_key is not None
+    original_edit = discord.edit
+
+    async def failure(message_id: str, content: str, image: bytes | None = None) -> None:
+        raise ConnectionResetError("connection reset")
+
+    discord.edit = failure
+    asyncio.run(processor.process(report, notify=notify))
+    assert len(discord.sent) == 1
+    assert store.get_event(event_key)["message_id"] == "message-1"
+    assert "Discord edit failed; not posting replacement" in caplog.text
+
+    discord.edit = original_edit
+    asyncio.run(processor.process(report))
+    assert discord.edited[-1][0] == "message-1"
+    assert len(discord.sent) == 1
+    store.close()
+
+
+@pytest.mark.parametrize("reconnect", [False, True])
+def test_history_edit_failure_does_not_send_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reconnect: bool,
+) -> None:
+    import asyncio
+
+    processor, store, discord = _processor(tmp_path)
+    service = Service(processor.config, processor, store)
+    report = _quake("report-1", "DetailScale", scale=40)
+    asyncio.run(processor.process(report))
+    event_key = store.report_event_key(551, "report-1")
+    assert event_key is not None
+
+    async def history() -> list[dict[str, Any]]:
+        return [report]
+
+    async def failure(message_id: str, content: str, image: bytes | None = None) -> None:
+        raise ConnectionResetError("connection reset")
+
+    monkeypatch.setattr("awoke.service.fetch_history", history)
+    discord.edit = failure
+    if reconnect:
+        asyncio.run(service._reconcile_history(notify_new=True))
+    else:
+        asyncio.run(service._initialize())
+    assert len(discord.sent) == 1
+    assert store.get_event(event_key)["message_id"] == "message-1"
+    store.close()
+
+
 def test_eew_unknown_forecast_sends_red_map_with_notification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -410,21 +477,32 @@ def test_tsunami_failed_archive_mark_is_retried_after_next_cycle(tmp_path: Path)
     store.close()
 
 
-def test_tsunami_failed_edit_keeps_old_post_for_cancellation_mark(tmp_path: Path) -> None:
+@pytest.mark.parametrize("notify", [False, True])
+def test_tsunami_failed_edit_keeps_old_post_for_cancellation_mark(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, notify: bool,
+) -> None:
     import asyncio
 
     processor, store, discord = _processor(tmp_path)
     processor.config = replace(processor.config, test_mode=True)
+    original_edit = discord.edit
 
     async def failure(message_id: str, content: str, image: bytes | None = None) -> None:
         raise RuntimeError("offline")
 
-    discord.edit = failure
     asyncio.run(processor.process(_tsunami("a", 0, [{"name": "A", "grade": "Watch"}])))
-    asyncio.run(processor.process(_tsunami("b", 1, [{"name": "A", "grade": "Warning"}])))
-    asyncio.run(processor.process(_tsunami("c", 2, [], True)))
-    assert len(discord.sent) == 3
-    assert [item[0] for item in discord.content_edits] == ["message-1", "message-2"]
+    discord.edit = failure
+    asyncio.run(processor.process(_tsunami("b", 1, [{"name": "A", "grade": "Warning"}]), notify=notify))
+    assert len(discord.sent) == 1
+    assert store.get_event("552:timeline")["state"]["current"]["message_id"] == "message-1"
+    assert "Discord tsunami edit failed; not posting replacement" in caplog.text
+    discord.edit = original_edit
+    asyncio.run(processor.process(_tsunami("c", 2, [{"name": "A", "grade": "MajorWarning"}])))
+    assert discord.edited[-1][0] == "message-1"
+    assert len(discord.sent) == 1
+    asyncio.run(processor.process(_tsunami("d", 3, [], True)))
+    assert len(discord.sent) == 2
+    assert [item[0] for item in discord.content_edits] == ["message-1"]
     store.close()
 
 
